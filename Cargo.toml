@@ -1,0 +1,18 @@
+[package]
+name = "ricks-textureripper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+egui_dock = { version = "0.16", features = ["serde"] }
+image = "0.25"
+rfd = "0.15"
+rectangle-pack = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

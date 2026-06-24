@@ -1,0 +1,416 @@
+//! The Texture View panel: a pannable / zoomable canvas that shows the loaded
+//! source images, plus live, editable rip selections.
+
+use std::path::Path;
+
+use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+
+use crate::project::{LoadedImage, Project, ViewState};
+use crate::rip_tool::{self, DragHandle, RipShape, Xform};
+
+const SUPPORTED_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "bmp", "gif", "tga", "tiff", "tif", "webp", "ico", "dds",
+];
+
+/// Opens a native file picker and loads the chosen image(s) into `project`.
+pub fn open_add_image_dialog(ctx: &egui::Context, project: &mut Project) {
+    let picked = rfd::FileDialog::new()
+        .set_title("Add Image")
+        .add_filter("Images", SUPPORTED_EXTENSIONS)
+        .pick_files();
+
+    let Some(paths) = picked else {
+        return; // user cancelled
+    };
+
+    for path in paths {
+        match load_image(ctx, project, &path) {
+            Ok(name) => project.status = Some(format!("Loaded {name}")),
+            Err(e) => project.status = Some(format!("Failed to load {}: {e}", path.display())),
+        }
+    }
+}
+
+/// Uploads an RGBA buffer as a texture (shared by image loading and rip output).
+pub fn upload_texture(
+    ctx: &egui::Context,
+    name: &str,
+    rgba: &image::RgbaImage,
+) -> egui::TextureHandle {
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+    ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
+}
+
+/// Decodes an image file into a `LoadedImage` (at the origin, no adjustments).
+pub fn load_loaded_image(ctx: &egui::Context, path: &Path) -> Result<LoadedImage, String> {
+    let dynimg = image::open(path).map_err(|e| e.to_string())?;
+    let rgba = dynimg.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "image".to_string());
+
+    let texture = upload_texture(ctx, &name, &rgba);
+    let mips = crate::image_edit::build_mips(&rgba);
+    Ok(LoadedImage {
+        name,
+        size,
+        texture,
+        mips,
+        original: rgba.clone(),
+        adjust: crate::project::Adjustments::default(),
+        dirty: false,
+        pixels: rgba,
+        pos: Vec2::ZERO,
+        source_path: path.to_path_buf(),
+    })
+}
+
+/// Decodes an image file and appends it to the project.
+fn load_image(ctx: &egui::Context, project: &mut Project, path: &Path) -> Result<String, String> {
+    let mut img = load_loaded_image(ctx, path)?;
+    let offset = project.images.len() as f32 * 32.0;
+    img.pos = Vec2::new(offset, offset);
+    let name = img.name.clone();
+    let idx = project.images.len();
+    project.images.push(img);
+    project.active_image = Some(idx);
+
+    Ok(name)
+}
+
+/// Draws the whole Texture View panel (toolbar + canvas).
+pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
+    toolbar(ui, project);
+
+    // The transient status message now lives in the bottom chin bar (see
+    // `App::status_bar`), so the canvas gets the full panel height.
+    ui.separator();
+    canvas(ui, project);
+}
+
+fn toolbar(ui: &mut egui::Ui, project: &mut Project) {
+    ui.horizontal(|ui| {
+        if ui.button("Add Image").clicked() {
+            open_add_image_dialog(ui.ctx(), project);
+        }
+        if ui.button("Add Rip").clicked() {
+            rip_tool::add_rip(project);
+        }
+        ui.separator();
+        ui.label(format!("{} image(s)", project.images.len()));
+        ui.label(format!("{} rip(s)", project.rips.len()));
+        ui.separator();
+        if ui.button("Reset view").clicked() {
+            project.view.pan = Vec2::ZERO;
+            project.view.zoom = 1.0;
+        }
+        ui.label(format!("{:.0}%", project.view.zoom * 100.0));
+    });
+
+    // Controls for the selected rip.
+    let mut delete: Option<usize> = None;
+    if let Some(sel) = project.editor.selected {
+        if sel < project.rips.len() {
+            ui.horizontal(|ui| {
+                let rip = &mut project.rips[sel];
+                ui.label("Shape:");
+                let is_quad = matches!(rip.shape, RipShape::Quad(_));
+                if ui.selectable_label(is_quad, "Quad (perspective)").clicked() {
+                    rip_tool::set_shape_quad(rip);
+                }
+                if ui.selectable_label(!is_quad, "Circle").clicked() {
+                    rip_tool::set_shape_circle(rip);
+                }
+                ui.separator();
+                if ui.button("Delete rip").clicked() {
+                    delete = Some(sel);
+                }
+                if ui.button("Deselect").clicked() {
+                    project.editor.selected = None;
+                }
+            });
+        }
+    }
+
+    if let Some(i) = delete {
+        project.rips.remove(i);
+        project.editor.selected = None;
+        project.atlas_dirty = true;
+        project.status = Some("Rip deleted.".to_string());
+    }
+}
+
+/// The pannable / zoomable image canvas with live rip editing.
+fn canvas(ui: &mut egui::Ui, project: &mut Project) {
+    let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, Color32::from_gray(28));
+
+    let margin = project.cursor_margin;
+    let Project {
+        images,
+        view,
+        rips,
+        editor,
+        active_image,
+        guides,
+        ..
+    } = project;
+
+    // Guide-toggle icon in the top-right corner of the canvas.
+    let guide_btn_rect = Rect::from_min_size(
+        Pos2::new(rect.right() - 34.0, rect.top() + 8.0),
+        Vec2::splat(26.0),
+    );
+    let guide_btn = ui.interact(guide_btn_rect, ui.id().with("guide_toggle"), Sense::click());
+    if guide_btn.clicked() {
+        guides.enabled = !guides.enabled;
+    }
+    let over_guide_btn = guide_btn
+        .hover_pos()
+        .map_or(false, |p| guide_btn_rect.contains(p));
+
+    // --- Zoom around the pointer ----------------------------------------
+    if response.hovered() {
+        let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+        let pinch = ui.input(|i| i.zoom_delta());
+        let factor = if pinch != 1.0 {
+            pinch
+        } else if scroll_y != 0.0 {
+            (scroll_y * 0.0015).exp()
+        } else {
+            1.0
+        };
+        if factor != 1.0 {
+            if let Some(ptr) = response.hover_pos() {
+                let new_zoom = (view.zoom * factor).clamp(0.05, 40.0);
+                let origin = rect.min.to_vec2();
+                let world = (ptr.to_vec2() - origin - view.pan) / view.zoom;
+                view.pan = ptr.to_vec2() - origin - world * new_zoom;
+                view.zoom = new_zoom;
+            }
+        }
+    }
+
+    let over_guide = response
+        .interact_pointer_pos()
+        .is_some_and(|p| guide_btn_rect.contains(p));
+
+    // --- Left button: Shift = move image / pan, plain = rip handle ------
+    // (plain left-drag only adjusts rip handles, so the cursor never lies.)
+    if response.drag_started_by(egui::PointerButton::Primary) && !over_guide {
+        editor.drag = DragHandle::None;
+        view.dragging_image = None;
+        view.panning = false;
+        let ptr = response.interact_pointer_pos();
+        if ui.input(|i| i.modifiers.shift) {
+            // Shift-drag moves the image under the cursor; empty space pans.
+            view.dragging_image = ptr.and_then(|p| topmost_image_at(images, view, rect, p));
+            view.panning = view.dragging_image.is_none();
+        } else if let (Some(ptr), Some(sel)) = (ptr, editor.selected) {
+            if sel < rips.len() && rips[sel].image < images.len() {
+                // Prefer the handle the cursor was showing just before the press
+                // (egui may have moved the pointer off a thin edge by the time it
+                // calls this a drag); fall back to a fresh hit-test at the press.
+                let x = make_xform(rect.min, view, images[rips[sel].image].pos);
+                editor.drag = if editor.hover_handle != DragHandle::None {
+                    editor.hover_handle
+                } else {
+                    rip_tool::hit_handle(&rips[sel], &x, ptr, margin).unwrap_or(DragHandle::None)
+                };
+            }
+        }
+    }
+    if response.dragged_by(egui::PointerButton::Primary) {
+        if editor.is_dragging() {
+            if let Some(sel) = editor.selected {
+                if sel < rips.len() && rips[sel].image < images.len() {
+                    let x = make_xform(rect.min, view, images[rips[sel].image].pos);
+                    if let Some(ptr) = response.interact_pointer_pos() {
+                        rip_tool::apply(&mut rips[sel], editor.drag, &x, ptr, response.drag_delta());
+                    }
+                }
+            }
+        } else if let Some(idx) = view.dragging_image.filter(|&i| i < images.len()) {
+            images[idx].pos += response.drag_delta() / view.zoom;
+        } else if view.panning {
+            view.pan += response.drag_delta();
+        }
+    }
+
+    // --- Middle button: always pans the workspace ------------------------
+    if response.dragged_by(egui::PointerButton::Middle) {
+        view.pan += response.drag_delta();
+    }
+
+    if response.drag_stopped() {
+        editor.drag = DragHandle::None;
+        view.dragging_image = None;
+        view.panning = false;
+    }
+
+    // --- Click selects a rip (or an image) ------------------------------
+    if response.clicked() {
+        if let Some(ptr) = response.interact_pointer_pos() {
+            if !guide_btn_rect.contains(ptr) {
+                let mut hit_rip = None;
+                for i in (0..rips.len()).rev() {
+                    if rips[i].image < images.len() {
+                        let x = make_xform(rect.min, view, images[rips[i].image].pos);
+                        if rip_tool::contains_point(&rips[i], &x, ptr) {
+                            hit_rip = Some(i);
+                            break;
+                        }
+                    }
+                }
+                match hit_rip {
+                    Some(i) => {
+                        editor.selected = Some(i);
+                        *active_image = Some(rips[i].image);
+                    }
+                    None => {
+                        editor.selected = None;
+                        // Clicking empty space keeps the current image selected
+                        // (so "Add Rip" still targets it); only switch when the
+                        // click actually lands on another image.
+                        if let Some(idx) = topmost_image_at(images, view, rect, ptr) {
+                            *active_image = Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Cursor feedback ------------------------------------------------
+    // Remember the handle under the cursor this frame so a drag started next
+    // frame can use it (see the drag-start handling above).
+    editor.hover_handle = DragHandle::None;
+    if response.dragged_by(egui::PointerButton::Middle) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if editor.is_dragging() {
+        ui.ctx().set_cursor_icon(rip_tool::handle_cursor(editor.drag));
+    } else if view.dragging_image.is_some() || view.panning {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if response.hovered() && !over_guide_btn {
+        if ui.input(|i| i.modifiers.shift) {
+            // Shift hover = "move image / pan" mode.
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        } else if let (Some(sel), Some(ptr)) = (editor.selected, response.hover_pos()) {
+            if sel < rips.len() && rips[sel].image < images.len() {
+                let x = make_xform(rect.min, view, images[rips[sel].image].pos);
+                if let Some(h) = rip_tool::hit_handle(&rips[sel], &x, ptr, margin) {
+                    editor.hover_handle = h;
+                    ui.ctx().set_cursor_icon(rip_tool::handle_cursor(h));
+                }
+            }
+        }
+    }
+
+    // --- Draw images -----------------------------------------------------
+    for (idx, img) in images.iter().enumerate() {
+        let img_rect = image_screen_rect(img, view, rect);
+        if !rect.intersects(img_rect) {
+            continue;
+        }
+        painter.image(
+            img.texture.id(),
+            img_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        let stroke = if *active_image == Some(idx) {
+            Stroke::new(2.0, Color32::from_rgb(90, 170, 255))
+        } else {
+            Stroke::new(1.0, Color32::from_gray(90))
+        };
+        painter.rect_stroke(img_rect, 0.0, stroke, StrokeKind::Outside);
+    }
+
+    // --- Draw rips (unselected first, selected on top) ------------------
+    for (i, rip) in rips.iter().enumerate() {
+        if editor.selected == Some(i) || rip.image >= images.len() {
+            continue;
+        }
+        let x = make_xform(rect.min, view, images[rip.image].pos);
+        rip_tool::draw_rip(rip, &painter, &x, false);
+    }
+    if let Some(sel) = editor.selected {
+        if sel < rips.len() && rips[sel].image < images.len() {
+            let x = make_xform(rect.min, view, images[rips[sel].image].pos);
+            rip_tool::draw_rip(&rips[sel], &painter, &x, true);
+            if guides.enabled {
+                if let RipShape::Quad(c) = &rips[sel].shape {
+                    rip_tool::draw_guides(c, &painter, &x, guides.vertical, guides.horizontal);
+                }
+            }
+        }
+    }
+
+    // --- Guide-toggle icon (four crossing lines, "#"-style) -------------
+    let icon_bg = if over_guide_btn {
+        Color32::from_gray(70)
+    } else {
+        Color32::from_gray(48)
+    };
+    painter.rect_filled(guide_btn_rect, 3.0, icon_bg);
+    let icon_col = if guides.enabled {
+        Color32::from_rgb(255, 180, 0)
+    } else {
+        Color32::from_gray(200)
+    };
+    let st = Stroke::new(1.5, icon_col);
+    let r = guide_btn_rect;
+    let (vx1, vx2) = (r.left() + r.width() * 0.38, r.left() + r.width() * 0.62);
+    let (hy1, hy2) = (r.top() + r.height() * 0.38, r.top() + r.height() * 0.62);
+    painter.line_segment([Pos2::new(vx1, r.top() + 5.0), Pos2::new(vx1, r.bottom() - 5.0)], st);
+    painter.line_segment([Pos2::new(vx2, r.top() + 5.0), Pos2::new(vx2, r.bottom() - 5.0)], st);
+    painter.line_segment([Pos2::new(r.left() + 5.0, hy1), Pos2::new(r.right() - 5.0, hy1)], st);
+    painter.line_segment([Pos2::new(r.left() + 5.0, hy2), Pos2::new(r.right() - 5.0, hy2)], st);
+    guide_btn.on_hover_text("Toggle guide lines");
+
+    if images.is_empty() {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Add an image to get started",
+            egui::FontId::proportional(16.0),
+            Color32::from_gray(120),
+        );
+    }
+}
+
+/// Builds the local<->screen transform for an image at `img_pos`.
+fn make_xform(canvas_min: Pos2, view: &ViewState, img_pos: Vec2) -> Xform {
+    Xform {
+        canvas_min,
+        pan: view.pan,
+        zoom: view.zoom,
+        img_pos,
+    }
+}
+
+/// Screen-space rectangle an image occupies given the current view transform.
+fn image_screen_rect(img: &LoadedImage, view: &ViewState, canvas: Rect) -> Rect {
+    let top_left = canvas.min + view.pan + img.pos * view.zoom;
+    Rect::from_min_size(top_left, img.size_vec() * view.zoom)
+}
+
+/// Index of the top-most image containing `point` (later images draw on top).
+fn topmost_image_at(
+    images: &[LoadedImage],
+    view: &ViewState,
+    canvas: Rect,
+    point: Pos2,
+) -> Option<usize> {
+    images
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, img)| image_screen_rect(img, view, canvas).contains(point))
+        .map(|(idx, _)| idx)
+}

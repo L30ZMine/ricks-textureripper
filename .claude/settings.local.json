@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cargo build *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell($found = Get-ChildItem -Path \"C:\\\\\",\"$env:USERPROFILE\",\"$env:LOCALAPPDATA\",\"C:\\\\Program Files\" -Filter \"cargo.exe\" -Recurse -ErrorAction SilentlyContinue -Depth 4 | Select-Object -First 5 -ExpandProperty FullName; if \\($found\\) { $found } else { Write-Output \"NOT FOUND\" })",
+      "PowerShell($w = Get-Command winget -ErrorAction SilentlyContinue; if \\($w\\) { \"winget: $\\($w.Source\\)\" } else { \"winget: NO\" }; $c = Get-Command choco -ErrorAction SilentlyContinue; if \\($c\\) { \"choco: $\\($c.Source\\)\" } else { \"choco: NO\" })",
+      "PowerShell(winget install *)",
+      "PowerShell($env:Path = \"$env:USERPROFILE\\\\.cargo\\\\bin;$env:Path\"; $p = Start-Process -FilePath \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" -ArgumentList \"run\" -WorkingDirectory \"C:\\\\Users\\\\l30z\\\\ricks-textureripper\" -PassThru -RedirectStandardError \"$env:TEMP\\\\trr_err.txt\" -RedirectStandardOutput \"$env:TEMP\\\\trr_out.txt\"; Start-Sleep -Seconds 8; if \\($p.HasExited\\) { \"EXITED early, code=$\\($p.ExitCode\\)\"; Get-Content \"$env:TEMP\\\\trr_err.txt\" -Tail 20 } else { \"RUNNING \\(window launched ok\\), pid=$\\($p.Id\\)\"; Stop-Process -Id $p.Id -Force; \"stopped\" })",
+      "PowerShell(Get-Process *)",
+      "PowerShell($candidates = @\\(\"$env:USERPROFILE\\\\Documents\\\\ricks-textureripper\", \"$env:OneDrive\\\\Documents\\\\ricks-textureripper\", \"$env:OneDriveConsumer\\\\Documents\\\\ricks-textureripper\"\\); foreach \\($c in $candidates\\) { if \\(Test-Path $c\\) { \"EXISTS: $c\" } else { \"missing: $c\" } })",
+      "PowerShell($env:Path = \"$env:USERPROFILE\\\\.cargo\\\\bin;$env:Path\"; Start-Process cargo -ArgumentList 'run' -WorkingDirectory 'C:\\\\Users\\\\l30z\\\\ricks-textureripper'; Start-Sleep 12; $p = Get-Process -Name ricks-textureripper -ErrorAction SilentlyContinue; if \\($p\\) { \"RUNNING \\(pid $\\($p.Id\\)\\)\"; $p | Stop-Process -Force } else { \"NOT RUNNING\" })",
+      "PowerShell($env:Path = \"$env:USERPROFILE\\\\.cargo\\\\bin;$env:Path\"; $log = \"$env:LOCALAPPDATA\\\\Temp\\\\claude\\\\C--Users-l30z-ricks-textureripper\\\\e826c8c2-b249-4ac7-9000-f789bfa51d51\\\\scratchpad\\\\run.log\"; Start-Process -FilePath \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" -ArgumentList 'run' -WorkingDirectory 'C:\\\\Users\\\\l30z\\\\ricks-textureripper' -RedirectStandardError $log -RedirectStandardOutput \"$log.out\" -WindowStyle Hidden; Start-Sleep 15; $p = Get-Process -Name ricks-textureripper -ErrorAction SilentlyContinue; if \\($p\\) { \"RUNNING \\(pid $\\($p.Id\\)\\)\"; $p | Stop-Process -Force } else { \"NOT RUNNING\"; \"--- stderr ---\"; Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 20 })",
+      "PowerShell($env:Path = \"$env:USERPROFILE\\\\.cargo\\\\bin;$env:Path\"; $log = \"$env:LOCALAPPDATA\\\\Temp\\\\claude\\\\C--Users-l30z-ricks-textureripper\\\\e826c8c2-b249-4ac7-9000-f789bfa51d51\\\\scratchpad\\\\run2.log\"; Start-Process -FilePath \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" -ArgumentList 'run' -WorkingDirectory 'C:\\\\Users\\\\l30z\\\\ricks-textureripper' -RedirectStandardError $log -RedirectStandardOutput \"$log.out\" -WindowStyle Hidden; Start-Sleep 14; $p = Get-Process -Name ricks-textureripper -ErrorAction SilentlyContinue; if \\($p\\) { \"RUNNING \\(pid $\\($p.Id\\)\\)\"; $p | Stop-Process -Force } else { \"NOT RUNNING\"; Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 25 })",
+      "Bash(git init *)",
+      "PowerShell($env:Path = \"$env:USERPROFILE\\\\.cargo\\\\bin;$env:Path\"; Start-Process -FilePath \"cargo\" -ArgumentList \"run\" -WorkingDirectory \"C:\\\\Users\\\\l30z\\\\ricks-textureripper\" -WindowStyle Minimized; Start-Sleep -Seconds 10; $p = Get-Process -Name ricks-textureripper -ErrorAction SilentlyContinue; if \\($p\\) { \"RUNNING \\(pid $\\($p.Id\\)\\)\"; $p | Stop-Process -Force } else { \"NOT RUNNING - likely crashed\" })"
+    ]
+  }
+}
