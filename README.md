@@ -1,3 +1,4 @@
+<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.0 </p>
 <p align="center">
   <img src="src/logo_long_g.png" alt="Rick's Texture Ripper" width="520">
 </p>
@@ -7,10 +8,9 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
 <img src="screens/Screenshot1.png" alt="Rick's Texture Ripper" width="320">
 <img src="screens/Screenshot2.png" alt="Rick's Texture Ripper" width="320">
 </p>
-<p align="center">
 
-</p>
-Rick's Texture Ripper - Built in Rust - Version 1.3.0 
+
+
 
 ## Navigation
 
