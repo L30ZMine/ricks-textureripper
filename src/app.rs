@@ -33,7 +33,30 @@ pub struct App {
     /// Save-layout dialog state.
     show_save_layout: bool,
     save_layout_name: String,
+    /// First-run setup dialog (preferences location + optional install).
+    show_first_run: bool,
+    /// First-run choice: store preferences next to the exe (portable) vs Documents.
+    first_run_portable: bool,
+    /// First-run choice: install to Program Files + add a Start Menu shortcut.
+    first_run_install: bool,
+    /// First-run choice: delete the current exe after installing (move, not copy).
+    first_run_delete_old: bool,
+    /// Receiver for the background update check spawned at startup.
+    update_rx: Option<std::sync::mpsc::Receiver<crate::update::Outcome>>,
+    /// Showing the "unsaved changes" confirmation before quitting.
+    confirm_quit: bool,
+    /// Set once the user has confirmed quitting, so the next close isn't vetoed.
+    allow_close: bool,
+    /// `ctx.input().time` of the last autosave, for the ~30s cadence.
+    last_autosave: f64,
+    /// Crash-recovery: autosaves offered after an unclean shutdown, and whether
+    /// the recovery prompt is showing.
+    recover_entries: Vec<crate::autosave::Recoverable>,
+    show_recover: bool,
 }
+
+/// Autosave cadence, in seconds.
+const AUTOSAVE_INTERVAL: f64 = 30.0;
 
 /// The controls / quick-help text shown in the Info window. Edit `src/info.md`
 /// to change it (embedded at build time).
@@ -48,12 +71,12 @@ const INFO_LOGO_PNG: &[u8] = include_bytes!("logo_long_g.png");
 const ABOUT_LOGO_PNG: &[u8] = include_bytes!("logo_g.png");
 
 impl App {
-    pub fn new(startup_open: Option<PathBuf>) -> Self {
+    pub fn new(startup_open: Option<PathBuf>, first_run: bool) -> Self {
         let config = layouts::load_config();
         let dock = layouts::load_layout(&config.default_layout)
             .unwrap_or_else(|_| layouts::builtin_default());
         let show_info = config.show_info_on_startup;
-        Self {
+        let mut app = Self {
             projects: vec![Project::new("unnamed", dock)],
             active: 0,
             next_project_id: 2,
@@ -66,7 +89,24 @@ impl App {
             pending_open: startup_open,
             show_save_layout: false,
             save_layout_name: String::new(),
-        }
+            show_first_run: first_run,
+            first_run_portable: false,
+            first_run_install: false,
+            first_run_delete_old: false,
+            // Check for a newer release in the background and show the result.
+            update_rx: Some(crate::update::spawn_check()),
+            confirm_quit: false,
+            allow_close: false,
+            last_autosave: 0.0,
+            recover_entries: Vec::new(),
+            show_recover: false,
+        };
+        // Begin the autosave session and detect an unclean previous shutdown.
+        let (crashed, recoverable) = crate::autosave::start_session();
+        app.recover_entries = recoverable;
+        app.show_recover = crashed && !app.recover_entries.is_empty();
+        app.projects[0].set_status("Searching for updates…");
+        app
     }
 
     /// The dock layout a new project should start from (the configured default,
@@ -275,17 +315,26 @@ impl eframe::App for App {
             egui::Visuals::dark()
         });
 
+        // Surface the background update-check result in the status bar.
+        self.poll_update_check(ctx);
+
         // Open a project passed on the command line / by double-click, once we
         // have a context to upload its textures with.
         if let Some(path) = self.pending_open.take() {
             self.open_project_path(ctx, &path);
         }
 
+        // Drag-and-drop: dropping image files anywhere on the window adds them.
+        self.handle_dropped_files(ctx);
+
         self.handle_shortcuts(ctx);
         self.menu_bar(ctx);
         self.about_window(ctx);
         self.info_window(ctx);
         self.save_layout_window(ctx);
+        self.first_run_window(ctx);
+        self.recover_window(ctx);
+        self.quit_guard(ctx);
 
         // While the pointer is held (dragging a handle/slider) extract rips at a
         // cheap preview resolution; once the user settles, rerun at full quality.
@@ -334,16 +383,22 @@ impl eframe::App for App {
         }
         self.projects[active].dock_state = dock;
 
-        // Reflect work in the OS cursor (set last so it wins over panel cursors).
-        // A wait cursor while a project is loading; a background-progress cursor
-        // while rips/images are (re)computing or the app is otherwise lagging.
-        if self.pending_open.is_some() {
+        // Reflect work in the OS cursor with a single wait cursor (set last so it
+        // wins over panel cursors): while a project loads, or while rips/images
+        // are (re)computing and the user isn't mid-drag.
+        if self.pending_open.is_some() || (recomputing && !busy) {
             ctx.set_cursor_icon(egui::CursorIcon::Wait);
             ctx.request_repaint();
-        } else if recomputing && !busy {
-            ctx.set_cursor_icon(egui::CursorIcon::Progress);
-            ctx.request_repaint();
         }
+
+        // Periodic autosave of modified projects (writes happen off-thread). The
+        // timer wake keeps it firing even while the app is idle.
+        let now = ctx.input(|i| i.time);
+        if now - self.last_autosave >= AUTOSAVE_INTERVAL {
+            self.last_autosave = now;
+            crate::autosave::autosave_modified(&self.projects);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(AUTOSAVE_INTERVAL as u64));
     }
 }
 
@@ -621,6 +676,13 @@ impl App {
                         self.show_info = true;
                         ui.close_menu();
                     }
+                    if ui.button("Setup…").clicked() {
+                        // Reopen the first-run dialog, reflecting the current
+                        // storage choice.
+                        self.first_run_portable = layouts::is_portable();
+                        self.show_first_run = true;
+                        ui.close_menu();
+                    }
                     if ui.button("About").clicked() {
                         self.show_about = true;
                         ui.close_menu();
@@ -824,7 +886,7 @@ impl App {
                         },
                     );
                     ui.add_space(16.0);
-                    ui.label("Version 1.2.0");
+                    ui.label("Version 1.3.0");
                     ui.weak(format!("Built {}", env!("BUILD_DATE")));
                     ui.add_space(4.0);
                 });
@@ -834,7 +896,314 @@ impl App {
 
     /// The Info / quick-controls window (opens on startup, reopenable via
     /// Help > Info). Content is the embedded `info.md`, lightly rendered.
+    /// Polls the background update check and, once it finishes, replaces the
+    /// "Searching for updates…" status with the result.
+    fn poll_update_check(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.update_rx else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                let v = env!("CARGO_PKG_VERSION");
+                match outcome {
+                    crate::update::Outcome::UpToDate => {
+                        self.set_status(format!("Up to date (v{v})."))
+                    }
+                    crate::update::Outcome::Available(tag) => self.set_status(format!(
+                        "Update available: {tag} (you have v{v}) — github.com/l30zmine/ricks-textureripper/releases"
+                    )),
+                    crate::update::Outcome::Failed => {
+                        self.set_status("Couldn't check for updates.")
+                    }
+                }
+                self.update_rx = None;
+            }
+            // Still running: keep the UI ticking so we pick the result up promptly.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(400));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.update_rx = None,
+        }
+    }
+
+    /// First-run setup: choose where preferences live and optionally install.
+    fn first_run_window(&mut self, ctx: &egui::Context) {
+        if !self.show_first_run {
+            return;
+        }
+        let mut finish = false;
+        let mut open = true;
+        egui::Window::new("Setup")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("Where should preferences and layouts be stored?");
+                ui.add_space(4.0);
+                ui.radio_value(&mut self.first_run_portable, false, "Documents (recommended)");
+                if let Some(d) = layouts::documents_dir() {
+                    ui.weak(format!("    {}", d.display()));
+                }
+                ui.radio_value(
+                    &mut self.first_run_portable,
+                    true,
+                    "Next to the program (portable)",
+                );
+                if let Some(d) = layouts::portable_dir() {
+                    ui.weak(format!("    {}", d.display()));
+                }
+
+                #[cfg(windows)]
+                {
+                    ui.add_space(10.0);
+                    // Installing a debug build makes no sense (it's not a
+                    // distributable exe), so the option is release-only.
+                    if cfg!(debug_assertions) {
+                        ui.weak("Install to Program Files is disabled in debug builds.");
+                    } else {
+                        ui.checkbox(
+                            &mut self.first_run_install,
+                            "Install to Program Files and add a Start Menu shortcut",
+                        );
+                        ui.weak("    Asks for administrator approval (UAC); the app reopens from there.");
+                        if self.first_run_install {
+                            ui.indent("install_opts", |ui| {
+                                ui.checkbox(
+                                    &mut self.first_run_delete_old,
+                                    "Delete the current copy after installing",
+                                );
+                            });
+                        }
+                    }
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Continue").clicked() {
+                        finish = true;
+                    }
+                });
+            });
+        if finish {
+            self.finish_first_run(ctx);
+        } else if !open {
+            // Dismissed via the window's close button without applying.
+            self.show_first_run = false;
+        }
+    }
+
+    /// Applies the first-run choices: storage location, saved config, optional
+    /// (elevated) install. On install the app closes itself so the elevated
+    /// worker can replace/relaunch it from the new path.
+    fn finish_first_run(&mut self, ctx: &egui::Context) {
+        // Apply the chosen storage location (explicitly either way so switching
+        // back to Documents from portable also takes effect).
+        let dir = if self.first_run_portable {
+            layouts::portable_dir()
+        } else {
+            layouts::documents_dir()
+        };
+        if let Some(d) = dir {
+            layouts::set_app_dir(d);
+        }
+        // Writing the config marks setup complete (it now exists, so the dialog
+        // won't reappear next launch).
+        if let Err(e) = layouts::save_config(&self.config) {
+            self.set_error(format!("Couldn't save preferences: {e}"));
+        }
+        self.show_first_run = false;
+
+        // Never install a debug build (it's not a distributable exe).
+        if self.first_run_install && !cfg!(debug_assertions) {
+            match crate::install::install_to_program_files(self.first_run_delete_old) {
+                Ok(()) => {
+                    // The elevated worker waits for us to exit, then relaunches
+                    // from Program Files (and deletes this exe if requested). This
+                    // is an explicit, deliberate close, so bypass the quit guard.
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(e) => self.set_error(format!("Install failed: {e}")),
+            }
+        }
+    }
+
+    /// True when any open project has unsaved changes.
+    fn has_unsaved(&self) -> bool {
+        self.projects.iter().any(|p| p.modified)
+    }
+
+    /// Saves every modified project for a quit (prompting Save As for un-named
+    /// ones). Returns false if any save was cancelled/failed (so quit aborts).
+    fn save_all_for_quit(&mut self) -> bool {
+        for i in 0..self.projects.len() {
+            if self.projects[i].modified {
+                self.active = i;
+                self.save_project();
+                if self.projects[i].modified {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Intercepts close requests (window X / Alt+F4 / OS shutdown / Exit / Ctrl+Q)
+    /// and confirms when there are unsaved changes, vetoing the close until the
+    /// user decides.
+    fn quit_guard(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if !self.allow_close && self.has_unsaved() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.confirm_quit = true;
+            } else {
+                // A close is actually proceeding — record a clean shutdown so the
+                // next start doesn't treat it as a crash.
+                crate::autosave::mark_clean_shutdown();
+            }
+        }
+
+        if !self.confirm_quit {
+            return;
+        }
+
+        let mut close_now = false;
+        let unsaved = self.projects.iter().filter(|p| p.modified).count();
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{unsaved} project(s) have unsaved changes. Quit anyway?"
+                ));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save all & quit").clicked() && self.save_all_for_quit() {
+                        close_now = true;
+                        self.confirm_quit = false;
+                    }
+                    if ui.button("Discard & quit").clicked() {
+                        close_now = true;
+                        self.confirm_quit = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_quit = false;
+                    }
+                });
+            });
+
+        if close_now {
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Crash-recovery prompt: shown at startup when the previous run didn't shut
+    /// down cleanly and autosaves are available.
+    fn recover_window(&mut self, ctx: &egui::Context) {
+        if !self.show_recover {
+            return;
+        }
+        let mut recover = false;
+        let mut dismiss = false;
+        egui::Window::new("Recover unsaved work")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "The app didn't close properly last time. {} autosaved project(s) can be recovered:",
+                    self.recover_entries.len()
+                ));
+                ui.add_space(4.0);
+                for entry in &self.recover_entries {
+                    ui.weak(format!("• {}", entry.name));
+                }
+                ui.add_space(10.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Recover all").clicked() {
+                        recover = true;
+                    }
+                    if ui.button("Ignore").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+
+        if recover {
+            // Clone the paths out so we can mutably borrow `self` to open them.
+            let paths: Vec<std::path::PathBuf> =
+                self.recover_entries.iter().map(|e| e.path.clone()).collect();
+            let mut opened = 0;
+            for path in &paths {
+                match crate::autosave::open_recovered(ctx, path) {
+                    Ok(project) => {
+                        // Replace the pristine startup tab with the first recovery.
+                        if opened == 0
+                            && self.projects.len() == 1
+                            && self.projects[0].images.is_empty()
+                            && !self.projects[0].modified
+                        {
+                            self.projects[0] = project;
+                        } else {
+                            self.projects.push(project);
+                        }
+                        opened += 1;
+                    }
+                    Err(e) => self.set_error(format!("Recover failed: {e}")),
+                }
+            }
+            if opened > 0 {
+                self.active = self.projects.len() - 1;
+                self.set_status(format!("Recovered {opened} project(s)."));
+            }
+            self.show_recover = false;
+        } else if dismiss {
+            self.show_recover = false;
+        }
+    }
+
+    /// Adds any image files dropped onto the window, and shows a hover overlay
+    /// while files are dragged over it. The whole window is the drop target.
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        // Overlay hint while files hover over the window.
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let screen = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("dnd_overlay"),
+            ));
+            painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+            painter.text(
+                screen.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop images to add",
+                egui::FontId::proportional(28.0),
+                egui::Color32::WHITE,
+            );
+        }
+
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        let project = &mut self.projects[self.active];
+        for file in dropped {
+            if let Some(path) = file.path {
+                if crate::texture_view::is_supported_image(&path) {
+                    crate::texture_view::add_image_path(ctx, project, &path);
+                }
+            }
+        }
+    }
+
     fn info_window(&mut self, ctx: &egui::Context) {
+        // Hold the Info window back until the first-run setup dialog is dismissed.
+        if self.show_first_run {
+            return;
+        }
         // Decode the banner logo once, on first show.
         if self.info_logo.is_none() {
             if let Ok(img) = image::load_from_memory(INFO_LOGO_PNG) {

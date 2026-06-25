@@ -74,4 +74,4 @@ Rip flat textures out of photos, un-warp their perspective, and pack them into a
 
 ---
 
-*Version 1.2 — written 2026-06-25.*
+*Version 1.3 — written 2026-06-25.*

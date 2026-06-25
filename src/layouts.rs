@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 use egui_dock::{DockState, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -15,12 +16,48 @@ use crate::ui::docking::PanelTab;
 /// Name of the immutable built-in layout.
 pub const DEFAULT_LAYOUT: &str = "default";
 
-/// `Documents/ricks-textureripper/`, created if missing.
+/// Override for the config/layouts base folder, chosen at startup (resolved from
+/// an existing install) or in the Setup dialog. `None` means "use Documents".
+static APP_DIR_OVERRIDE: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Sets the base folder for config + layouts (takes effect immediately, so the
+/// Setup dialog can switch it at runtime).
+pub fn set_app_dir(dir: PathBuf) {
+    if let Ok(mut w) = APP_DIR_OVERRIDE.write() {
+        *w = Some(dir);
+    }
+}
+
+/// `Documents/ricks-textureripper` — the default location (path only, not created).
+pub fn documents_dir() -> Option<PathBuf> {
+    Some(dirs::document_dir()?.join("ricks-textureripper"))
+}
+
+/// `<exe folder>/ricks-textureripper` — the portable location (path only, not created).
+pub fn portable_dir() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("ricks-textureripper"))
+}
+
+/// The active config/layouts folder (the override if set, else Documents),
+/// created if missing.
 pub fn app_dir() -> Option<PathBuf> {
-    let mut p = dirs::document_dir()?;
-    p.push("ricks-textureripper");
+    let p = APP_DIR_OVERRIDE
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .or_else(documents_dir)?;
     fs::create_dir_all(&p).ok()?;
     Some(p)
+}
+
+/// True when preferences are currently stored in the portable (next-to-exe)
+/// location rather than Documents.
+pub fn is_portable() -> bool {
+    let active = APP_DIR_OVERRIDE.read().ok().and_then(|g| g.clone());
+    match (active, portable_dir()) {
+        (Some(a), Some(p)) => a == p,
+        _ => false,
+    }
 }
 
 fn layouts_dir() -> Option<PathBuf> {

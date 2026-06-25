@@ -2,10 +2,12 @@
 
 mod app;
 mod atlas;
+mod autosave;
 mod b64;
 mod file_assoc;
 mod history;
 mod image_edit;
+mod install;
 mod layouts;
 mod proj_io;
 mod project;
@@ -13,6 +15,7 @@ mod rip_tool;
 mod snapshot;
 mod texture_view;
 mod ui;
+mod update;
 mod warp;
 
 fn main() -> eframe::Result<()> {
@@ -30,10 +33,16 @@ fn main() -> eframe::Result<()> {
                 .is_some_and(|e| e.eq_ignore_ascii_case(proj_io::EXTENSION))
         });
 
+    // Resolve where preferences live and whether this is the first run (no config
+    // in either candidate location yet → the app shows its setup dialog).
+    let first_run = resolve_storage();
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([800.0, 500.0])
-        .with_title("Rick's Texture Ripper 1.2.0");
+        // Accept files dropped onto the window (OLE drag-and-drop on Windows).
+        .with_drag_and_drop(true)
+        .with_title("Rick's Texture Ripper 1.3.0");
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -44,10 +53,29 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Rick's Texture Ripper 1.2.0",
+        "Rick's Texture Ripper 1.3.0",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(app::App::new(startup_open)))),
+        Box::new(move |_cc| Ok(Box::new(app::App::new(startup_open, first_run)))),
     )
+}
+
+/// Decides where config/layouts are read from and whether this is a first run.
+/// A portable install (config next to the exe) wins; otherwise Documents is used.
+/// Returns `true` when no config exists in either place yet.
+fn resolve_storage() -> bool {
+    let portable = layouts::portable_dir();
+    if portable
+        .as_ref()
+        .is_some_and(|d| d.join("config.json").exists())
+    {
+        if let Some(p) = portable {
+            layouts::set_app_dir(p);
+        }
+        return false;
+    }
+    // Default to Documents (no override needed); first run if it has no config.
+    !layouts::documents_dir()
+        .is_some_and(|d| d.join("config.json").exists())
 }
 
 /// Decodes the embedded `logo_g.ico` into the eframe window/taskbar icon.

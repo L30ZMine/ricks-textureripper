@@ -5,11 +5,16 @@
 //! swaps the whole `Project` that the panels render.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use egui::{Pos2, TextureHandle, Vec2};
 use egui_dock::DockState;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
+
+/// Hands out a unique per-session id to each `Project` (used to name autosaves
+/// so concurrent tabs don't collide). Not persisted; resets each run.
+static NEXT_PROJECT_ID: AtomicU64 = AtomicU64::new(1);
 
 use crate::history::History;
 use crate::rip_tool::{RipEditor, RipShape};
@@ -293,6 +298,8 @@ impl Default for ViewState {
 
 pub struct Project {
     pub name: String,
+    /// Unique per-session id (runtime-only), used to name this project's autosaves.
+    pub id: u64,
     /// On-disk path this project was last saved to / opened from, if any. Drives
     /// "Save" (overwrite) vs "Save As" (prompt). Runtime-only (not serialized).
     pub path: Option<PathBuf>,
@@ -338,6 +345,7 @@ impl Project {
     pub fn new(name: impl Into<String>, dock_state: DockState<PanelTab>) -> Self {
         let mut project = Self {
             name: name.into(),
+            id: NEXT_PROJECT_ID.fetch_add(1, Ordering::Relaxed),
             path: None,
             dock_state,
             images: Vec::new(),

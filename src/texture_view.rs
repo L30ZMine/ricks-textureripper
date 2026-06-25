@@ -31,6 +31,23 @@ pub fn open_add_image_dialog(ctx: &egui::Context, project: &mut Project) {
     }
 }
 
+/// True if `path` has a supported image extension (used for drag-and-drop).
+pub fn is_supported_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e.as_str()))
+}
+
+/// Loads a single image file into `project` and reports the outcome in the chin
+/// bar. Shared by drag-and-drop (the dropped file is window-wide).
+pub fn add_image_path(ctx: &egui::Context, project: &mut Project, path: &Path) {
+    match load_image(ctx, project, path) {
+        Ok(name) => project.set_status(format!("Loaded {name}")),
+        Err(e) => project.set_error(format!("Failed to load {}: {e}", path.display())),
+    }
+}
+
 /// Paints a Photoshop-style transparency checkerboard over the part of `rect`
 /// inside `clip`. Uses two dark greys in dark mode and two light greys in light
 /// mode; the pattern is screen-fixed (it doesn't scroll with pan/zoom), like

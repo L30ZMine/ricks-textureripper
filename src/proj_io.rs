@@ -61,28 +61,60 @@ fn decode_image(png_b64: &str) -> Result<RgbaImage, String> {
         .to_rgba8())
 }
 
-/// Serializes `project` to `path`, embedding each image's original pixels.
-pub fn save(path: &Path, project: &Project) -> Result<(), String> {
-    let images = project
-        .images
+/// A snapshot of everything needed to write a project file, captured cheaply on
+/// the UI thread (image *pixels* are memcpy-cloned, but the expensive PNG/Base64
+/// encoding happens later in [`write_job`]). It is `Send`, so autosave can encode
+/// and write off the main thread.
+pub struct SaveJob {
+    name: String,
+    snapshot: ProjectSnapshot,
+    dock_state: DockState<PanelTab>,
+    originals: Vec<(std::path::PathBuf, RgbaImage)>,
+}
+
+/// Captures a [`SaveJob`] from `project` (cheap: clones metadata + raw pixels,
+/// no encoding).
+pub fn capture_for_save(project: &Project) -> SaveJob {
+    SaveJob {
+        name: project.name.clone(),
+        snapshot: snapshot::capture(project),
+        dock_state: project.dock_state.clone(),
+        originals: project
+            .images
+            .iter()
+            .map(|img| (img.source_path.clone(), img.original.clone()))
+            .collect(),
+    }
+}
+
+/// Encodes and writes a [`SaveJob`] to `path` (the heavy part — safe to call off
+/// the UI thread).
+pub fn write_job(path: &Path, job: SaveJob) -> Result<(), String> {
+    let images = job
+        .originals
         .iter()
-        .map(|img| {
+        .map(|(source_path, img)| {
             Ok(EmbeddedImage {
-                source_path: img.source_path.clone(),
-                png: encode_image(&img.original)?,
+                source_path: source_path.clone(),
+                png: encode_image(img)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
 
     let file = ProjectFile {
         version: FORMAT_VERSION,
-        name: project.name.clone(),
-        snapshot: snapshot::capture(project),
-        dock_state: project.dock_state.clone(),
+        name: job.name,
+        snapshot: job.snapshot,
+        dock_state: job.dock_state,
         images,
     };
     let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+/// Serializes `project` to `path`, embedding each image's original pixels.
+pub fn save(path: &Path, project: &Project) -> Result<(), String> {
+    write_job(path, capture_for_save(project))
 }
 
 /// Loads a project from `path`. Embedded pixels are decoded first so `restore`
