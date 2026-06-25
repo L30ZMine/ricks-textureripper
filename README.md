@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="src/logo_long_w.png" alt="Rick's Texture Ripper" width="520">
+  <img src="src/logo_long_g.png" alt="Rick's Texture Ripper" width="520">
 </p>
 
-A desktop tool for ripping flat textures out of photos and packing them into a texture atlas. Select a region in a photo, correct its perspective, and the result is added to a single atlas image you can export as a PNG.
+A desktop tool for ripping flat textures out of photos and packing them into a texture atlas. Select a region in a photo, correct its perspective, and the result is added to a single atlas image you can export.
 
 Version 1.2.0. Built in Rust with `egui`.
 
@@ -27,6 +27,16 @@ Version 1.2.0. Built in Rust with `egui`.
 - **Undo/redo**, a recent-files list, light and dark themes.
 - **Windows integration** — per-user `.rtrpf` file association.
 
+## Usage
+
+1. **Add Image** (Ctrl+T) to load a photo.
+2. **Add Rip** (Ctrl+R) and drag the corners over the surface you want.
+3. Open the **Atlas View** to arrange and size the rips.
+4. **Export Atlas** (Ctrl+X) to write the PNG.
+
+The in-app **Help > Info** window lists every control and shortcut.
+
+
 ## Build and run
 
 Requires a stable Rust toolchain (`cargo`).
@@ -39,26 +49,20 @@ cargo run --release
 
 The release build has no console window. A debug build (`cargo run`) keeps one for logging.
 
-The application runs on Windows, Linux, and macOS. The executable icon and `.rtrpf` file association are Windows-only; on other systems those steps are skipped.
+The application runs on Windows, Linux, and macOS. The executable icon and `.rtrpf` file association are Windows-only for now.
 
-## Usage
-
-1. **Add Image** (Ctrl+T) to load a photo.
-2. **Add Rip** (Ctrl+R) and drag the corners over the surface you want.
-3. Open the **Atlas View** to arrange and size the rips.
-4. **Export Atlas** (Ctrl+X) to write the PNG.
-
-The in-app **Help > Info** window lists every control and shortcut.
 
 ### Hotkeys
 
 | Action | Shortcut |
 | --- | --- |
 | Add Image / Add Rip / New Project | Ctrl+T / Ctrl+R / Ctrl+F |
+| Open Project | Ctrl+G |
 | Save / Save As / Export Atlas | Ctrl+S / Ctrl+Shift+S / Ctrl+X |
 | Undo / Redo | Ctrl+Z / Ctrl+Y |
 | Remove selected rip or active image | Delete / Backspace |
 | Toggle Texture / Atlas / Rips / Image Edit panels | Alt+1 / Alt+2 / Alt+3 / Alt+4 |
+| Quit | Ctrl+Q |
 
 ## Tech stack
 

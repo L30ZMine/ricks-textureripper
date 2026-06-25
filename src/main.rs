@@ -50,9 +50,9 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-/// Decodes the embedded `logo_w.ico` into an eframe window/taskbar icon.
+/// Decodes the embedded `logo_g.ico` into the eframe window/taskbar icon.
 fn load_icon() -> Option<egui::IconData> {
-    let img = image::load_from_memory(include_bytes!("logo_w.ico"))
+    let img = image::load_from_memory(include_bytes!("logo_g.ico"))
         .ok()?
         .to_rgba8();
     let (width, height) = img.dimensions();

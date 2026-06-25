@@ -26,6 +26,8 @@ pub struct App {
     info_logo: Option<egui::TextureHandle>,
     /// Lazily-loaded logo texture shown in the About window.
     about_logo: Option<egui::TextureHandle>,
+    /// Lazily-loaded small `_g` logo shown (faint, non-clickable) left of the menus.
+    menu_logo: Option<egui::TextureHandle>,
     /// A `.rtrpf` path from the command line, opened on the first frame.
     pending_open: Option<PathBuf>,
     /// Save-layout dialog state.
@@ -38,11 +40,12 @@ pub struct App {
 const INFO_MARKDOWN: &str = include_str!("info.md");
 
 /// The banner logo shown at the top of the Info window (referenced from
-/// `info.md` as `logo_long_w.png`).
-const INFO_LOGO_PNG: &[u8] = include_bytes!("logo_long_w.png");
+/// `info.md` as `logo_long_g.png`).
+const INFO_LOGO_PNG: &[u8] = include_bytes!("logo_long_g.png");
 
-/// The square logo shown (centered) at the top of the About window.
-const ABOUT_LOGO_PNG: &[u8] = include_bytes!("logo_w.png");
+/// The square brand logo: shown (centered) in the About window and (faintly) as
+/// the menu-bar logo. The neutral `_g` variant reads on light or dark.
+const ABOUT_LOGO_PNG: &[u8] = include_bytes!("logo_g.png");
 
 impl App {
     pub fn new(startup_open: Option<PathBuf>) -> Self {
@@ -59,6 +62,7 @@ impl App {
             show_info,
             info_logo: None,
             about_logo: None,
+            menu_logo: None,
             pending_open: startup_open,
             show_save_layout: false,
             save_layout_name: String::new(),
@@ -182,13 +186,15 @@ impl App {
         let _ = layouts::save_config(&self.config);
     }
 
-    fn open_project_dialog(&mut self, ctx: &egui::Context) {
+    fn open_project_dialog(&mut self) {
         let picked = rfd::FileDialog::new()
             .set_title("Open Project")
             .add_filter("Rick's Texture Ripper Project", &[crate::proj_io::EXTENSION])
             .pick_file();
         if let Some(path) = picked {
-            self.open_project_path(ctx, &path);
+            // Defer the load by one frame so the wait cursor (set in `update`) is
+            // shown while the project decodes.
+            self.pending_open = Some(path);
         }
     }
 
@@ -285,6 +291,11 @@ impl eframe::App for App {
         // cheap preview resolution; once the user settles, rerun at full quality.
         let busy = ctx.input(|i| i.pointer.any_down());
         let project = &mut self.projects[self.active];
+        // Heavy CPU work this frame (full-res rip recompute / dirty images), used
+        // below to show a background-progress cursor.
+        let recomputing = project.needs_full
+            || project.rips.iter().any(|r| r.dirty)
+            || project.images.iter().any(|i| i.dirty);
         crate::image_edit::recompute_dirty_images(ctx, project);
         crate::rip_tool::recompute_dirty(ctx, project, busy);
         if !busy && project.needs_full {
@@ -322,6 +333,17 @@ impl eframe::App for App {
                 .show(ctx, &mut viewer);
         }
         self.projects[active].dock_state = dock;
+
+        // Reflect work in the OS cursor (set last so it wins over panel cursors).
+        // A wait cursor while a project is loading; a background-progress cursor
+        // while rips/images are (re)computing or the app is otherwise lagging.
+        if self.pending_open.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::Wait);
+            ctx.request_repaint();
+        } else if recomputing && !busy {
+            ctx.set_cursor_icon(egui::CursorIcon::Progress);
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -358,6 +380,9 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(ctrl, Key::F)) {
             self.add_project();
         }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::G)) {
+            self.open_project_dialog();
+        }
 
         // Redo before undo so Ctrl+Shift+Z isn't swallowed by the plain Ctrl+Z.
         if ctx.input_mut(|i| i.consume_key(ctrl, Key::Y))
@@ -378,6 +403,9 @@ impl App {
         }
         if ctx.input_mut(|i| i.consume_key(ctrl, Key::X)) {
             crate::atlas::export(&mut self.projects[self.active]);
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::Q)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         // Delete / Backspace removes the selected rip, else the active image.
@@ -405,12 +433,41 @@ impl App {
     }
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
+        // Decode the small `_g` menu-bar logo once.
+        if self.menu_logo.is_none() {
+            if let Ok(img) = image::load_from_memory(ABOUT_LOGO_PNG) {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                self.menu_logo =
+                    Some(ctx.load_texture("menu_logo", color, egui::TextureOptions::LINEAR));
+            }
+        }
+        // Cloned out so the panel closure can still borrow `self` mutably. The logo
+        // is fainter in light mode (35% transparent) than dark (80% transparent).
+        let menu_logo = self.menu_logo.clone();
+        let menu_logo_alpha: u8 = if self.config.light_mode { 166 } else { 51 };
+
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             // Lay the whole row out left-to-right, vertically centered, so the
             // menu text lines up with the taller framed project tabs.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.set_min_height(26.0);
                 egui::menu::bar(ui, |ui| {
+                // A small, faint, non-clickable logo flush to the left of the File
+                // menu (fainter in light mode — see `menu_logo_alpha`).
+                if let Some(tex) = &menu_logo {
+                    let height = 18.0;
+                    let native = tex.size_vec2();
+                    let width = native.x / native.y.max(1.0) * height;
+                    ui.add(
+                        egui::Image::new(egui::load::SizedTexture::new(
+                            tex.id(),
+                            egui::vec2(width, height),
+                        ))
+                        .tint(egui::Color32::from_white_alpha(menu_logo_alpha)),
+                    );
+                }
                 ui.menu_button("File", |ui| {
                     if ui
                         .add(egui::Button::new("Add Image").shortcut_text("Ctrl+T"))
@@ -437,8 +494,11 @@ impl App {
                         self.add_project();
                         ui.close_menu();
                     }
-                    if ui.button("Open…").clicked() {
-                        self.open_project_dialog(ctx);
+                    if ui
+                        .add(egui::Button::new("Open…").shortcut_text("Ctrl+G"))
+                        .clicked()
+                    {
+                        self.open_project_dialog();
                         ui.close_menu();
                     }
                     ui.menu_button("Open Recent", |ui| {
@@ -446,8 +506,8 @@ impl App {
                         // collapses to tiny file-name buttons nor stretches to a
                         // full path; over-long names are cut with a trailing
                         // ellipsis (the full path stays in the hover tooltip).
-                        ui.set_min_width(190.0);
-                        ui.set_max_width(380.0);
+                        ui.set_min_width(114.0);
+                        ui.set_max_width(228.0);
                         if self.config.recent_files.is_empty() {
                             ui.add_enabled(false, egui::Button::new("(none)"));
                         } else {
@@ -457,16 +517,17 @@ impl App {
                                     .file_name()
                                     .map(|s| s.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| path.display().to_string());
-                                let label = ellipsize(&full, 40);
+                                let label = ellipsize(&full, 24);
                                 if ui
                                     .add(
                                         egui::Button::new(label)
-                                            .min_size(egui::vec2(180.0, 0.0)),
+                                            .min_size(egui::vec2(108.0, 0.0)),
                                     )
                                     .on_hover_text(path.display().to_string())
                                     .clicked()
                                 {
-                                    self.open_project_path(ctx, &path);
+                                    // Defer so the wait cursor shows while loading.
+                                    self.pending_open = Some(path.clone());
                                     ui.close_menu();
                                 }
                             }
@@ -501,7 +562,10 @@ impl App {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Exit").clicked() {
+                    if ui
+                        .add(egui::Button::new("Exit").shortcut_text("Ctrl+Q"))
+                        .clicked()
+                    {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
@@ -539,12 +603,13 @@ impl App {
                     ui.menu_button("Cursor Interp", |ui| {
                         let m = &mut self.projects[self.active].cursor_margin;
                         ui.add(egui::Slider::new(m, 1.0..=50.0).text("Handle margin (px)"));
-                        ui.weak("Corner grab radius, edge dead-zone, and move inset.");
+                        ui.weak("Adjust if you're having issue with grabbing corners, grabbing edges or moving rips.");
+                        ui.weak("Lower = harder to grab; Higher = easier.");
                     });
                     ui.menu_button("Preview Quality", |ui| {
                         let q = &mut self.projects[self.active].preview_quality;
                         ui.add(egui::Slider::new(q, 0.1..=1.0).text("Preview scale"));
-                        ui.weak("Lower = faster live previews (more downscaling); higher = sharper but heavier.");
+                        ui.weak("Lower = live previews,faster; Higher = higher quality, slower.");
                     });
                 });
 
@@ -760,6 +825,7 @@ impl App {
                     );
                     ui.add_space(16.0);
                     ui.label("Version 1.2.0");
+                    ui.weak(format!("Built {}", env!("BUILD_DATE")));
                     ui.add_space(4.0);
                 });
             });

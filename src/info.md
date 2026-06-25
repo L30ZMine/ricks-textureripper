@@ -1,5 +1,5 @@
 Welcome to
-![Rick's Texture Ripper](logo_long_w.png)
+![Rick's Texture Ripper](logo_long_g.png)
 
 Rip flat textures out of photos, un-warp their perspective, and pack them into a single atlas. Reopen this window any time from **Help > Info**.
 
@@ -63,8 +63,8 @@ Rip flat textures out of photos, un-warp their perspective, and pack them into a
 
 ### Files & editing
 
-- **Ctrl+T** Add Image · **Ctrl+R** Add Rip · **Ctrl+F** New Project
-- **Ctrl+S** Save · **Ctrl+Shift+S** Save As · **Ctrl+X** Export Atlas
+- **Ctrl+T** Add Image · **Ctrl+R** Add Rip · **Ctrl+F** New Project · **Ctrl+Q** Quit
+- **Ctrl+G** Open Project · **Ctrl+S** Save · **Ctrl+Shift+S** Save As · **Ctrl+X** Export Atlas
 - **Ctrl+Z** Undo · **Ctrl+Y** / **Ctrl+Shift+Z** Redo
 - **Delete** / **Backspace** — remove the selected rip, else the active image
 

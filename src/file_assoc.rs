@@ -2,13 +2,13 @@
 //!
 //! On Windows we register a per-user (HKCU, no admin needed) association so
 //! Explorer shows our icon for `.rtrpf` files and double-clicking one opens the
-//! app. The icon is the bundled `logo_w.ico`, written out next to our app data
+//! app. The icon is the bundled `logo_g.ico`, written out next to our app data
 //! so Explorer can reference it by path. On other platforms `register` is a
 //! no-op.
 
 /// The document icon, embedded at build time.
 #[cfg(windows)]
-const ICON_ICO: &[u8] = include_bytes!("logo_w.ico");
+const ICON_ICO: &[u8] = include_bytes!("logo_g.ico");
 
 /// Registers the `.rtrpf` association (icon + open command). Best-effort: any
 /// failure is logged and ignored so it never blocks app start-up.
