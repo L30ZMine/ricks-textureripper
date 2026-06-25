@@ -2,8 +2,6 @@
   <img src="src/logo_long_w.png" alt="Rick's Texture Ripper" width="520">
 </p>
 
-# Rick's Texture Ripper
-
 A desktop tool for ripping flat textures out of photos and packing them into a texture atlas. Select a region in a photo, correct its perspective, and the result is added to a single atlas image you can export as a PNG.
 
 Version 1.2.0. Built in Rust with `egui`.
@@ -18,7 +16,7 @@ Version 1.2.0. Built in Rust with `egui`.
 ## Features
 
 - **Perspective rips** — draw a quad over a surface in a photo; the four corners can be moved freely to un-warp perspective into a flat texture. Circle selections are also supported.
-- **Live editing** — rips recompute as you drag; there is no separate extract step.
+- **Live editing** — rips recompute as you drag.
 - **Atlas packing** — all rips are packed into one image.
   - *Automatic* sort packs rips tightly into the chosen aspect ratio and scales non-custom rips toward an even size.
   - *Manual* sort lets you place each rip by hand, with optional snapping to a grid and to nearby rip edges.
@@ -27,7 +25,7 @@ Version 1.2.0. Built in Rust with `egui`.
 - **Dockable panels** — Texture View, Atlas View, Rips Gallery, and Image Edit can be arranged, saved, and reloaded as named layouts.
 - **Projects** — save and open `.rtrpf` project files. Source images are embedded, so a project still loads after the originals are moved or deleted.
 - **Undo/redo**, a recent-files list, light and dark themes.
-- **Windows integration** — embedded executable icon and a per-user `.rtrpf` file association (double-click a project to open it).
+- **Windows integration** — per-user `.rtrpf` file association.
 
 ## Build and run
 
