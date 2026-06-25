@@ -3,6 +3,11 @@
 </p>
 Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of photos and packing them into a texture atlas. Select a region in a photo, correct its perspective, and the result is added to a single atlas image you can export.
 
+<p align="center">
+  <img src="Screen/Screenshot1.png" alt="Rick's Texture Ripper" width="320">
+  <p height="20px">
+  <img src="Screen/Screenshot2.png" alt="Rick's Texture Ripper" width="320">
+</p>
 Rick's Texture Ripper - Built in Rust - Version 1.3.0 
 
 ## Navigation
