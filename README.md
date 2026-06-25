@@ -1,8 +1,19 @@
+<p align="center">
+  <img src="src/logo_long_w.png" alt="Rick's Texture Ripper" width="520">
+</p>
+
 # Rick's Texture Ripper
 
 A desktop tool for ripping flat textures out of photos and packing them into a texture atlas. Select a region in a photo, correct its perspective, and the result is added to a single atlas image you can export as a PNG.
 
 Version 1.2.0. Built in Rust with `egui`.
+
+## Navigation
+
+- **Zoom** — mouse wheel
+- **Pan** — middle mouse button
+- **Move an image** — Shift + left-drag
+- **Edit a rip** — left-drag its handles
 
 ## Features
 
@@ -50,8 +61,6 @@ The in-app **Help > Info** window lists every control and shortcut.
 | Undo / Redo | Ctrl+Z / Ctrl+Y |
 | Remove selected rip or active image | Delete / Backspace |
 | Toggle Texture / Atlas / Rips / Image Edit panels | Alt+1 / Alt+2 / Alt+3 / Alt+4 |
-
-Navigation: mouse wheel zooms, the middle mouse button pans, Shift + left-drag moves an image, and left-drag edits the selected rip.
 
 ## Tech stack
 
