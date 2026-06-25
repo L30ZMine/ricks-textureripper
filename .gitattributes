@@ -1,8 +1,0 @@
-# Strip comments from Rust sources in the committed/pushed copy via the
-# `stripcomments` clean filter. The working tree keeps its comments; only the
-# blob stored in git (and therefore what lands on GitHub) is comment-free.
-#
-# The filter command lives in the local repo config (it is NOT committed), so
-# each clone must enable it once:  tools/setup-git-filters.sh   (or .ps1)
-# Without it configured, git falls back to identity (comments pass through).
-*.rs filter=stripcomments
