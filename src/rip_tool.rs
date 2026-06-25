@@ -1,23 +1,14 @@
-//! The Rip tool: live, editable selections drawn on the source images.
-//!
-//! A selection is either a free **quad** (four corners that can be dragged
-//! independently to warp perspective) or a **circle**. Geometry is stored in
-//! image-local pixel coordinates. Editing marks the rip dirty; the output is
-//! recomputed live (no explicit "extract" step).
-
 use egui::{Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 use crate::project::{LoadedImage, Project, Rip, RipOutput};
 
-/// Selection geometry, in image-local pixel coordinates.
 #[derive(Clone, Debug)]
 pub enum RipShape {
-    /// Four free corners in order TL, TR, BR, BL (perspective quad).
+
     Quad([Pos2; 4]),
     Circle { center: Pos2, radius: f32 },
 }
 
-/// Which handle of the selected rip is being dragged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DragHandle {
     None,
@@ -29,15 +20,11 @@ pub enum DragHandle {
     CircleMove,
 }
 
-/// Rip selection / drag state held by a project.
 pub struct RipEditor {
-    /// Index of the selected rip (the one showing editable handles).
+
     pub selected: Option<usize>,
     pub drag: DragHandle,
-    /// The handle under the cursor as of the last hover frame. Used to start a
-    /// drag from the genuine press position: by the time egui recognizes a drag,
-    /// the pointer may have slipped a few px off a thin edge, so re-hit-testing
-    /// at that moment can miss a handle the cursor was clearly showing.
+
     pub hover_handle: DragHandle,
 }
 
@@ -57,28 +44,26 @@ impl RipEditor {
     }
 }
 
-/// Maps between image-local pixel coords and screen coords.
 pub struct Xform {
     pub canvas_min: Pos2,
     pub pan: Vec2,
     pub zoom: f32,
     pub img_pos: Vec2,
+
+    pub img_scale: f32,
 }
 
 impl Xform {
     pub fn local_to_screen(&self, local: Pos2) -> Pos2 {
-        self.canvas_min + self.pan + (self.img_pos + local.to_vec2()) * self.zoom
+        self.canvas_min + self.pan + (self.img_pos + local.to_vec2() * self.img_scale) * self.zoom
     }
 
     pub fn screen_to_local(&self, screen: Pos2) -> Pos2 {
-        (((screen - self.canvas_min - self.pan) / self.zoom) - self.img_pos).to_pos2()
+        ((((screen - self.canvas_min - self.pan) / self.zoom) - self.img_pos) / self.img_scale)
+            .to_pos2()
     }
 }
 
-/// How close (screen px) the pointer must be to a quad edge to grab it.
-const EDGE_HIT_DIST: f32 = 6.0;
-
-/// Closest point on the segment `a`–`b` to `p` (screen coords).
 fn closest_point_on_segment(p: Pos2, a: Pos2, b: Pos2) -> Pos2 {
     let ab = b - a;
     let len2 = ab.length_sq();
@@ -89,11 +74,6 @@ fn closest_point_on_segment(p: Pos2, a: Pos2, b: Pos2) -> Pos2 {
     a + ab * t
 }
 
-// ---------------------------------------------------------------------------
-// Construction / shape conversion
-// ---------------------------------------------------------------------------
-
-/// Default axis-aligned quad covering the middle ~half of an image.
 pub fn default_quad(img: &LoadedImage) -> RipShape {
     let s = img.size_vec();
     RipShape::Quad([
@@ -104,7 +84,6 @@ pub fn default_quad(img: &LoadedImage) -> RipShape {
     ])
 }
 
-/// Adds a new live rip on the active image (or the last image) and selects it.
 pub fn add_rip(project: &mut Project) {
     let target = project
         .active_image
@@ -135,7 +114,6 @@ pub fn add_rip(project: &mut Project) {
     project.set_status("Drag the corners to warp; the rip updates live.");
 }
 
-/// Bounding box of the current shape (image-local).
 fn shape_bounds(shape: &RipShape) -> Rect {
     match shape {
         RipShape::Quad(c) => {
@@ -149,7 +127,6 @@ fn shape_bounds(shape: &RipShape) -> Rect {
     }
 }
 
-/// Converts a rip to a quad (axis-aligned from its current bounds).
 pub fn set_shape_quad(rip: &mut Rip) {
     if matches!(rip.shape, RipShape::Quad(_)) {
         return;
@@ -164,7 +141,6 @@ pub fn set_shape_quad(rip: &mut Rip) {
     rip.dirty = true;
 }
 
-/// Converts a rip to a circle (inscribed in its current bounds).
 pub fn set_shape_circle(rip: &mut Rip) {
     if matches!(rip.shape, RipShape::Circle { .. }) {
         return;
@@ -177,16 +153,6 @@ pub fn set_shape_circle(rip: &mut Rip) {
     rip.dirty = true;
 }
 
-// ---------------------------------------------------------------------------
-// Hit-testing & dragging
-// ---------------------------------------------------------------------------
-
-/// Returns the handle under `ptr` (screen coords) for editing this rip.
-///
-/// `margin` (screen px, user-tunable) is the corner grab radius, the edge
-/// dead-zone around each vertex, and the inset of the move region from the
-/// selection's border — so corners/edges win near the boundary and the whole
-/// selection only moves when grabbed well inside it.
 pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHandle> {
     match &rip.shape {
         RipShape::Quad(c) => {
@@ -195,8 +161,7 @@ pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHa
                     return Some(DragHandle::QuadCorner(i));
                 }
             }
-            // Edges are grabbable along their length, except within `margin` of
-            // the vertices (so corner grabs win there).
+
             let mut min_edge = f32::INFINITY;
             for i in 0..4 {
                 let a = x.local_to_screen(c[i]);
@@ -204,14 +169,14 @@ pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHa
                 let proj = closest_point_on_segment(ptr, a, b);
                 let d = proj.distance(ptr);
                 min_edge = min_edge.min(d);
-                if d <= EDGE_HIT_DIST
+                if d <= margin
                     && proj.distance(a) > margin
                     && proj.distance(b) > margin
                 {
                     return Some(DragHandle::QuadEdge(i));
                 }
             }
-            // Move only when grabbed at least `margin` inside the selection.
+
             if point_in_quad(c, x, ptr) && min_edge > margin {
                 return Some(DragHandle::QuadMove);
             }
@@ -225,7 +190,7 @@ pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHa
             if x.local_to_screen(*center).distance(ptr) <= margin {
                 return Some(DragHandle::CircleCenter);
             }
-            // Move only when grabbed `margin` inside the circle (in screen px).
+
             let inset = (*radius * x.zoom - margin).max(0.0);
             if x.local_to_screen(*center).distance(ptr) <= inset {
                 return Some(DragHandle::CircleMove);
@@ -235,7 +200,6 @@ pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHa
     }
 }
 
-/// True if `ptr` (screen) lies inside the rip's selection.
 pub fn contains_point(rip: &Rip, x: &Xform, ptr: Pos2) -> bool {
     match &rip.shape {
         RipShape::Quad(c) => point_in_quad(c, x, ptr),
@@ -244,7 +208,7 @@ pub fn contains_point(rip: &Rip, x: &Xform, ptr: Pos2) -> bool {
 }
 
 fn point_in_quad(c: &[Pos2; 4], x: &Xform, ptr: Pos2) -> bool {
-    // Even-odd ray cast in screen space.
+
     let pts: [Pos2; 4] = [
         x.local_to_screen(c[0]),
         x.local_to_screen(c[1]),
@@ -266,7 +230,6 @@ fn point_in_quad(c: &[Pos2; 4], x: &Xform, ptr: Pos2) -> bool {
     inside
 }
 
-/// Applies a drag of the given handle to the rip and marks it dirty.
 pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec2) {
     let local = x.screen_to_local(ptr);
     let local_delta = delta / x.zoom;
@@ -298,11 +261,6 @@ pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec
     rip.dirty = true;
 }
 
-// ---------------------------------------------------------------------------
-// Drawing
-// ---------------------------------------------------------------------------
-
-/// Draws a rip's outline; `selected` adds editable handles.
 pub fn draw_rip(rip: &Rip, painter: &Painter, x: &Xform, selected: bool) {
     let color = if selected {
         Color32::from_rgb(255, 180, 0)
@@ -318,8 +276,7 @@ pub fn draw_rip(rip: &Rip, painter: &Painter, x: &Xform, selected: bool) {
                 painter.line_segment([s[i], s[(i + 1) % 4]], stroke);
             }
             if selected {
-                // Only the corner vertices get handle dots; edges are dragged by
-                // grabbing the edge line itself (no midpoint dot needed).
+
                 for p in &s {
                     handle_dot(painter, *p);
                 }
@@ -336,19 +293,16 @@ pub fn draw_rip(rip: &Rip, painter: &Painter, x: &Xform, selected: bool) {
     }
 }
 
-/// Draws perspective-interpolated subdivision lines inside a quad selection.
 pub fn draw_guides(c: &[Pos2; 4], painter: &Painter, x: &Xform, vertical: u32, horizontal: u32) {
     let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 180, 0, 110));
-    // Interior vertical lines: interpolate along the top (TL->TR) and bottom
-    // (BL->BR) edges and connect.
+
     for i in 1..=vertical {
         let t = i as f32 / (vertical + 1) as f32;
         let top = c[0] + (c[1] - c[0]) * t;
         let bot = c[3] + (c[2] - c[3]) * t;
         painter.line_segment([x.local_to_screen(top), x.local_to_screen(bot)], stroke);
     }
-    // Interior horizontal lines: interpolate along the left (TL->BL) and right
-    // (TR->BR) edges and connect.
+
     for i in 1..=horizontal {
         let t = i as f32 / (horizontal + 1) as f32;
         let left = c[0] + (c[3] - c[0]) * t;
@@ -357,13 +311,12 @@ pub fn draw_guides(c: &[Pos2; 4], painter: &Painter, x: &Xform, vertical: u32, h
     }
 }
 
-/// The cursor to show while hovering or dragging a given handle.
 pub fn handle_cursor(handle: DragHandle) -> egui::CursorIcon {
     use egui::CursorIcon;
     match handle {
-        // Corner vertices use a precision (crosshair) cursor.
+
         DragHandle::QuadCorner(_) => CursorIcon::Crosshair,
-        // Top/bottom edges resize vertically; left/right edges horizontally.
+
         DragHandle::QuadEdge(0) | DragHandle::QuadEdge(2) => CursorIcon::ResizeVertical,
         DragHandle::QuadEdge(_) => CursorIcon::ResizeHorizontal,
         DragHandle::CircleRadius => CursorIcon::ResizeHorizontal,
@@ -385,16 +338,6 @@ fn handle_dot(painter: &Painter, p: Pos2) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Live recomputation
-// ---------------------------------------------------------------------------
-
-/// Recomputes the output of every dirty rip (un-warping quads, masking circles)
-/// and marks the atlas dirty if anything changed.
-///
-/// When `preview` is set, quads are warped at reduced resolution and any output
-/// resize override is skipped, to keep dragging responsive; `needs_full` is then
-/// flagged so the caller can rerun at full resolution once the user settles.
 pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool) {
     let Project {
         rips,
@@ -404,7 +347,7 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
         preview_quality,
         ..
     } = project;
-    // User-tunable live-preview scale (Edit > Preview Quality).
+
     let preview_scale = preview_quality.clamp(0.05, 1.0);
 
     for rip in rips.iter_mut() {
@@ -423,8 +366,6 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
         }
         let img = &images[rip.image];
 
-        // The output size the atlas should see, independent of preview quality:
-        // an explicit resize override, else the quad's natural un-warp size.
         let target = match (&rip.shape, rip.resize) {
             (_, Some(t)) => Some(t),
             (RipShape::Quad(c), None) => {
@@ -437,10 +378,7 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
         let result = match &rip.shape {
             RipShape::Quad(c) => {
                 if preview {
-                    // Sample a downscaled mip and warp at reduced output res. The
-                    // result is scaled back up to `target` below, so the atlas
-                    // footprint is unchanged while the per-pixel cost drops and
-                    // the source read stays cache-friendly / anti-aliased.
+
                     let (ms, msrc) = img.preview_source(preview_scale);
                     let scaled = (*c).map(|p| Pos2::new(p.x * ms, p.y * ms));
                     crate::warp::unwarp_quad(msrc, scaled, preview_scale / ms)
@@ -453,11 +391,7 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
 
         rip.output = result.map(|mut rgba| {
             crate::image_edit::apply_adjustments(&mut rgba, &rip.adjust);
-            // The atlas footprint is driven by the *declared* `size`, so we keep
-            // that stable at `target` either way (no layout jump on drag). For a
-            // full-res pass we actually resize the pixels to land there; during a
-            // preview we leave the pixels small and only report `target`, skipping
-            // the expensive per-frame upscale that made dragging lag.
+
             let size = if preview {
                 target
                     .map(|t| [t[0] as usize, t[1] as usize])
@@ -478,7 +412,6 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
     }
 }
 
-/// Crops a circular region and masks out everything outside the radius.
 fn extract_circle(src: &image::RgbaImage, center: Pos2, radius: f32) -> Option<image::RgbaImage> {
     let iw = src.width() as i64;
     let ih = src.height() as i64;

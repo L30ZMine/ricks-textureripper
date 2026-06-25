@@ -1,73 +1,15 @@
 Rick's Texture Ripper — Changelog
 =================================
 
-Version 1.3.0
--------------
+[ 1.3.0 ]
 
-Atlas packing
-- Tight automatic packing: Automatic sort now packs into the smallest bin of
-  the chosen aspect (1:1 for Square/Automatic, export W:H for Custom) instead of
-  one giant fixed bin that sprawled into a thin vertical strip.
-- Fair scaling: non-custom rips are scaled toward a fair common size (longest
-  side normalized to the custom-rip average, else the median of all, factor
-  capped to 0.25–4x) so a few huge rips no longer dominate. Rips with an explicit
-  resize are kept exact; Manual sort never scales.
-
-Atlas editing / preview
-- Resize grip is easy to grab: drawn as a small dot but hit over a large
-  (cursor_margin-sized) zone, matching the Texture View handles.
-- Hold Shift while dragging the resize grip to lock the rip's aspect ratio.
-- Manual Snap (Row-2 checkbox + grid-step value): a dragged rip snaps to nearby
-  rip/canvas edges (within ~8 screen px), otherwise to the grid (default step
-  16). The resize grip snaps too when Snap is on.
-- Body-drag moves a rip in either sort mode: dragging a rip's body in Automatic
-  flips the project to Manual (seeding positions from the current pack so nothing
-  jumps) and repositions the grabbed rip. The grab cursor shows over any rip body.
-
-Performance
-- Repack is cheap, composite is lazy: the atlas result no longer carries a
-  composited image; the live preview draws per-cell rip textures and export
-  composites on demand. Repacking on every change no longer re-overlays the
-  full-res atlas each frame. Rip warp outputs stay cached (recomputed only when
-  dirty, full-res once on settle).
-
-Display
-- Texture View background anchored: the checkerboard phase is window-fixed so
-  the pattern no longer shifts when the contextual "Shape" row pops in/out.
-
-Updates
-- Boot update check: the chin bar shows "Searching for updates…", then
-  up-to-date / update-available (with tag) / failed, by comparing the running
-  version to the latest GitHub release tag via the system curl (no new
-  dependency; runs on a background thread).
-
-Setup / install
-- First-run Setup dialog (also reopenable via Help > Setup…): pick where
-  preferences/layouts are stored — Documents (default) or portable next to the
-  exe — and optionally install to C:\Program Files plus a Start Menu shortcut.
-  First run is detected by the absence of config.json in either location.
-- Install is release-only (ignored in debug), runs headless and elevated via the
-  standard UAC path; it waits for the app to exit, optionally deletes the old
-  exe, and relaunches from the new path.
-
-Files / drag-and-drop
-- Drag-and-drop images: dropping image files anywhere on the window adds them
-  (with a hover overlay). Note: on Windows, UIPI blocks drops from a
-  lower-integrity Explorer into an elevated app — run the app non-elevated for
-  drag-and-drop.
-
-Saving / safety
-- Unsaved-changes quit guard: closing via the window X, Alt+F4, OS shutdown,
-  Exit, or Ctrl+Q is vetoed when any project is modified, prompting
-  Save all / Discard / Cancel.
-- Autosave + crash recovery: every 30s each modified project is saved off-thread
-  to <app_dir>/autosaves/ (newest two kept per project, older ones recycled). A
-  session.lock detects an unclean shutdown and offers to recover the latest
-  autosaves on next start.
-
-Misc
-- Single wait cursor: removed the separate background/Progress cursor — loading
-  and recompute both show the wait cursor.
-- info.md rewritten: features since 1.0, a full navigation/hotkey list, and a
-  version/date footer.
-- Version bumped to 1.3.0 throughout.
+- Tighter automatic atlas packing
+- Fairer rip scaling so big rips don't dominate
+- Manual sort: drag rips to arrange, snap to grid/edges
+- Easier-to-grab resize grip (Shift locks aspect)
+- Faster repacking (composite only on export)
+- Drag-and-drop images onto the window
+- Autosave + crash recovery
+- Unsaved-changes warning on quit
+- First-run setup + optional install
+- Boot update check

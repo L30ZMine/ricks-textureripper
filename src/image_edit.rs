@@ -1,10 +1,3 @@
-//! Phase 5 — the Image Edit panel plus the non-destructive adjustment pipeline.
-//!
-//! Brightness / contrast / saturation adjustments and an optional resize can be
-//! applied to either the active source image or the selected rip. Image
-//! adjustments rebuild the working pixels from a kept original; rip adjustments
-//! are folded into the live rip-extraction pass (see `rip_tool::recompute_dirty`).
-
 use image::imageops::FilterType;
 use image::RgbaImage;
 
@@ -12,27 +5,21 @@ use crate::project::{Adjustments, Project};
 use crate::rip_tool::RipShape;
 use crate::texture_view::upload_texture;
 
-// ---------------------------------------------------------------------------
-// Pixel pipeline
-// ---------------------------------------------------------------------------
-
-/// Applies brightness/contrast/saturation in place. No-op when identity. Alpha
-/// is left untouched.
 pub fn apply_adjustments(img: &mut RgbaImage, adj: &Adjustments) {
     if adj.is_identity() {
         return;
     }
     let bright = adj.brightness * 255.0;
-    let contrast = 1.0 + adj.contrast; // 0 = flat gray, 1 = unchanged, 2 = double
-    let sat = 1.0 + adj.saturation; // 0 = grayscale, 1 = unchanged, 2 = vivid
+    let contrast = 1.0 + adj.contrast;
+    let sat = 1.0 + adj.saturation;
 
     for px in img.pixels_mut() {
         let mut c = [px[0] as f32, px[1] as f32, px[2] as f32];
-        // Contrast around mid-gray, then brightness.
+
         for v in &mut c {
             *v = (*v - 128.0) * contrast + 128.0 + bright;
         }
-        // Saturation: lerp each channel toward perceived luminance.
+
         let l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
         for v in &mut c {
             *v = l + (*v - l) * sat;
@@ -43,7 +30,6 @@ pub fn apply_adjustments(img: &mut RgbaImage, adj: &Adjustments) {
     }
 }
 
-/// Returns `img` resized to `target` (clones unchanged when already that size).
 pub fn resize_to(img: &RgbaImage, target: [u32; 2]) -> RgbaImage {
     if img.width() == target[0] && img.height() == target[1] {
         img.clone()
@@ -52,8 +38,6 @@ pub fn resize_to(img: &RgbaImage, target: [u32; 2]) -> RgbaImage {
     }
 }
 
-/// Builds a downscale mip chain (each ~half the previous, a few levels) for a
-/// source image, so live previews can sample a smaller, anti-aliased copy.
 pub fn build_mips(base: &RgbaImage) -> Vec<RgbaImage> {
     let mut mips = Vec::new();
     let (mut w, mut h) = (base.width(), base.height());
@@ -70,8 +54,6 @@ pub fn build_mips(base: &RgbaImage) -> Vec<RgbaImage> {
     mips
 }
 
-/// Rebuilds every dirty image's working pixels (resize + adjustments) from its
-/// kept original, re-uploads the texture, and marks dependent rips for re-extract.
 pub fn recompute_dirty_images(ctx: &egui::Context, project: &mut Project) {
     let mut changed: Vec<usize> = Vec::new();
     for (idx, img) in project.images.iter_mut().enumerate() {
@@ -95,8 +77,6 @@ pub fn recompute_dirty_images(ctx: &egui::Context, project: &mut Project) {
     }
 }
 
-/// Scales the geometry of every rip on `image_idx` (used when the source image
-/// is resized so selections stay locked to the same image features).
 fn scale_rips_on_image(project: &mut Project, image_idx: usize, sx: f32, sy: f32) {
     for rip in project.rips.iter_mut() {
         if rip.image != image_idx {
@@ -119,18 +99,8 @@ fn scale_rips_on_image(project: &mut Project, image_idx: usize, sx: f32, sy: f32
     }
 }
 
-// ---------------------------------------------------------------------------
-// Panel UI
-// ---------------------------------------------------------------------------
-
-/// At or above this panel width the editor splits into two equal columns
-/// (sliders on the left, the remaining tools on the right); below it everything
-/// stacks in one column.
 const WIDE_THRESHOLD: f32 = 470.0;
 
-/// Draws the Image Edit panel. Edits the selected rip if one is selected,
-/// otherwise the active image. No title/heading — the panel is title-only via
-/// the dock tab.
 pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
     let wide = ui.available_width() >= WIDE_THRESHOLD;
     let rip_target = project.editor.selected.filter(|&i| i < project.rips.len());
@@ -143,7 +113,6 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
     }
 }
 
-/// Three adjustment sliders bound to `adj`; returns true if any changed.
 fn adjustment_sliders(ui: &mut egui::Ui, adj: &mut Adjustments) -> bool {
     let mut changed = false;
     changed |= ui
@@ -177,7 +146,6 @@ fn rip_editor(ui: &mut egui::Ui, project: &mut Project, ri: usize, wide: bool) {
     }
 }
 
-/// The non-slider rip controls (output-size override + reset). Returns dirty.
 fn rip_tools(ui: &mut egui::Ui, rip: &mut crate::project::Rip) -> bool {
     let mut dirty = false;
 
@@ -210,11 +178,14 @@ fn rip_tools(ui: &mut egui::Ui, rip: &mut crate::project::Rip) -> bool {
     rip.resize = resize;
 
     ui.separator();
-    if ui.button("Reset adjustments").clicked() {
-        rip.adjust = Adjustments::default();
-        rip.resize = None;
-        dirty = true;
-    }
+
+    ui.horizontal(|ui| {
+        if ui.button("Reset adjustments").clicked() {
+            rip.adjust = Adjustments::default();
+            rip.resize = None;
+            dirty = true;
+        }
+    });
 
     dirty
 }
@@ -238,8 +209,6 @@ fn image_editor(ui: &mut egui::Ui, project: &mut Project, ii: usize, wide: bool)
     }
 }
 
-/// The non-slider image controls (resize + reset). Returns dirty. Rips on this
-/// image are rescaled so they stay locked to the same image features.
 fn image_tools(ui: &mut egui::Ui, project: &mut Project, ii: usize) -> bool {
     let mut dirty = false;
 
@@ -257,13 +226,14 @@ fn image_tools(ui: &mut egui::Ui, project: &mut Project, ii: usize) -> bool {
         ui.add(egui::DragValue::new(&mut h).range(1..=16384).suffix(" px"));
     });
     ui.weak(format!("Original: {}×{} px", orig.0, orig.1));
-    if ui.button("Reset size").clicked() {
-        w = orig.0;
-        h = orig.1;
-    }
 
-    // Commit each frame so a drag accumulates; rips are rescaled by the
-    // incremental ratio to stay locked to the same image features.
+    ui.horizontal(|ui| {
+        if ui.button("Reset size").clicked() {
+            w = orig.0;
+            h = orig.1;
+        }
+    });
+
     if w != old[0] || h != old[1] {
         let sx = w as f32 / old[0] as f32;
         let sy = h as f32 / old[1] as f32;
@@ -272,10 +242,12 @@ fn image_tools(ui: &mut egui::Ui, project: &mut Project, ii: usize) -> bool {
         dirty = true;
     }
 
-    if ui.button("Reset adjustments").clicked() {
-        project.images[ii].adjust = Adjustments::default();
-        dirty = true;
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Reset adjustments").clicked() {
+            project.images[ii].adjust = Adjustments::default();
+            dirty = true;
+        }
+    });
 
     dirty
 }

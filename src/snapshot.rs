@@ -1,10 +1,3 @@
-//! A serializable snapshot of a project's editable document state.
-//!
-//! Used both for undo/redo (`history.rs`) and for project files (`proj_io.rs`).
-//! Heavy pixel buffers are *not* stored — images are referenced by source path
-//! and reloaded; rip outputs are recomputed live from geometry. Selection and
-//! active-image are captured/restored but excluded from change detection.
-
 use egui::{Pos2, Vec2};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -12,7 +5,6 @@ use std::path::PathBuf;
 use crate::project::{Adjustments, AtlasSettings, Guides, LoadedImage, Project, Rip};
 use crate::rip_tool::{DragHandle, RipShape};
 
-/// Serializable form of a rip's geometry (avoids depending on egui type serde).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum SerShape {
     Quad([[f32; 2]; 4]),
@@ -58,6 +50,13 @@ pub struct ImageState {
     pub pos: [f32; 2],
     pub size: [usize; 2],
     pub adjust: Adjustments,
+
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+}
+
+fn default_scale() -> f32 {
+    1.0
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -67,7 +66,7 @@ pub struct RipState {
     pub shape: SerShape,
     pub adjust: Adjustments,
     pub resize: Option<[u32; 2]>,
-    /// Manual atlas placement (top-left, atlas px); `None` in Automatic sort.
+
     #[serde(default)]
     pub atlas_pos: Option<[f32; 2]>,
 }
@@ -83,8 +82,7 @@ pub struct ProjectSnapshot {
 }
 
 impl ProjectSnapshot {
-    /// Compares only the document (ignores selection/active-image), so that
-    /// selecting or panning doesn't register as an undoable change.
+
     pub fn same_document(&self, other: &Self) -> bool {
         self.images == other.images
             && self.rips == other.rips
@@ -93,7 +91,6 @@ impl ProjectSnapshot {
     }
 }
 
-/// Captures the current editable state of `project`.
 pub fn capture(project: &Project) -> ProjectSnapshot {
     ProjectSnapshot {
         images: project
@@ -105,6 +102,7 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
                 pos: [img.pos.x, img.pos.y],
                 size: img.size,
                 adjust: img.adjust,
+                scale: img.scale,
             })
             .collect(),
         rips: project
@@ -126,9 +124,6 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
     }
 }
 
-/// Restores `snap` into `project`, reusing already-loaded images (matched by
-/// source path) and reloading any that are missing. Rips and images are marked
-/// dirty so their outputs recompute live.
 pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapshot) {
     let mut existing = std::mem::take(&mut project.images);
     let mut images: Vec<LoadedImage> = Vec::with_capacity(snap.images.len());
@@ -139,6 +134,7 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             img.pos = Vec2::new(st.pos[0], st.pos[1]);
             img.size = st.size;
             img.adjust = st.adjust;
+            img.scale = st.scale;
             img.dirty = true;
             images.push(img);
         } else if let Ok(mut img) = crate::texture_view::load_loaded_image(ctx, &st.source_path) {
@@ -146,6 +142,7 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             img.pos = Vec2::new(st.pos[0], st.pos[1]);
             img.size = st.size;
             img.adjust = st.adjust;
+            img.scale = st.scale;
             img.dirty = true;
             images.push(img);
         } else {

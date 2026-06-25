@@ -1,9 +1,3 @@
-//! Workspace layout persistence.
-//!
-//! A *layout* is a named, saved dock arrangement (`DockState<PanelTab>`). The
-//! built-in `"default"` layout is read-only and never written to disk. User
-//! layouts and config live under `Documents/ricks-textureripper/`.
-
 use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -13,33 +7,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui::docking::PanelTab;
 
-/// Name of the immutable built-in layout.
 pub const DEFAULT_LAYOUT: &str = "default";
 
-/// Override for the config/layouts base folder, chosen at startup (resolved from
-/// an existing install) or in the Setup dialog. `None` means "use Documents".
 static APP_DIR_OVERRIDE: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-/// Sets the base folder for config + layouts (takes effect immediately, so the
-/// Setup dialog can switch it at runtime).
 pub fn set_app_dir(dir: PathBuf) {
     if let Ok(mut w) = APP_DIR_OVERRIDE.write() {
         *w = Some(dir);
     }
 }
 
-/// `Documents/ricks-textureripper` — the default location (path only, not created).
 pub fn documents_dir() -> Option<PathBuf> {
     Some(dirs::document_dir()?.join("ricks-textureripper"))
 }
 
-/// `<exe folder>/ricks-textureripper` — the portable location (path only, not created).
 pub fn portable_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("ricks-textureripper"))
 }
 
-/// The active config/layouts folder (the override if set, else Documents),
-/// created if missing.
 pub fn app_dir() -> Option<PathBuf> {
     let p = APP_DIR_OVERRIDE
         .read()
@@ -50,8 +35,6 @@ pub fn app_dir() -> Option<PathBuf> {
     Some(p)
 }
 
-/// True when preferences are currently stored in the portable (next-to-exe)
-/// location rather than Documents.
 pub fn is_portable() -> bool {
     let active = APP_DIR_OVERRIDE.read().ok().and_then(|g| g.clone());
     match (active, portable_dir()) {
@@ -73,8 +56,6 @@ fn layout_path(name: &str) -> Option<PathBuf> {
     Some(p)
 }
 
-/// The built-in Blender-style split: Atlas top-left, Image Edit bottom-left,
-/// Texture top-right, Rips bottom-right.
 pub fn builtin_default() -> DockState<PanelTab> {
     let mut state = DockState::new(vec![PanelTab::Atlas]);
     let surface = state.main_surface_mut();
@@ -84,7 +65,6 @@ pub fn builtin_default() -> DockState<PanelTab> {
     state
 }
 
-/// All layout names: `"default"` first, then saved user layouts (alphabetical).
 pub fn list_layouts() -> Vec<String> {
     let mut user = Vec::new();
     if let Some(dir) = layouts_dir() {
@@ -105,6 +85,14 @@ pub fn list_layouts() -> Vec<String> {
     let mut names = vec![DEFAULT_LAYOUT.to_string()];
     names.extend(user);
     names
+}
+
+pub fn layout_exists(name: &str) -> bool {
+    let name = name.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case(DEFAULT_LAYOUT) {
+        return false;
+    }
+    layout_path(name).is_some_and(|p| p.exists())
 }
 
 pub fn save_layout(name: &str, state: &DockState<PanelTab>) -> Result<(), String> {
@@ -137,33 +125,32 @@ pub fn delete_layout(name: &str) -> Result<(), String> {
     fs::remove_file(path).map_err(|e| e.to_string())
 }
 
-/// App config persisted in `Documents/ricks-textureripper/config.json`.
 #[derive(Serialize, Deserialize)]
 pub struct Config {
-    /// Layout new projects start from.
+
     pub default_layout: String,
-    /// Whether to open the Info window on startup. Cleared once the user closes
-    /// the Info window, so it doesn't reappear on the next launch.
+
     #[serde(default = "default_true")]
     pub show_info_on_startup: bool,
-    /// Whether the UI uses the light theme (toggled in the Window menu).
+
     #[serde(default)]
     pub light_mode: bool,
-    /// Recently opened/saved project files, newest first (File > Open Recent).
+
     #[serde(default)]
     pub recent_files: Vec<PathBuf>,
+
+    #[serde(default = "default_true")]
+    pub confirm_layout_overwrite: bool,
 }
 
 fn default_true() -> bool {
     true
 }
 
-/// How many entries the recent-files list keeps.
 const MAX_RECENT: usize = 10;
 
 impl Config {
-    /// Records `path` as the most-recently-used project: moves it to the front,
-    /// de-duplicated, and caps the list at `MAX_RECENT`.
+
     pub fn push_recent(&mut self, path: &std::path::Path) {
         self.recent_files.retain(|p| p != path);
         self.recent_files.insert(0, path.to_path_buf());
@@ -178,6 +165,7 @@ impl Default for Config {
             show_info_on_startup: true,
             light_mode: false,
             recent_files: Vec::new(),
+            confirm_layout_overwrite: true,
         }
     }
 }

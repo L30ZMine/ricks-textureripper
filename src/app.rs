@@ -1,6 +1,3 @@
-//! Top-level application: window chrome (menu bar + project tab bar) and the
-//! dockable workspace. Each project owns its own dock layout.
-
 use std::path::PathBuf;
 
 use egui_dock::{DockArea, DockState, Style};
@@ -10,64 +7,60 @@ use crate::project::Project;
 use crate::ui::docking::{DockViewer, PanelTab};
 
 pub struct App {
-    /// Each Photoshop-style tab is an independent project (with its own layout).
+
     projects: Vec<Project>,
-    /// Index into `projects` of the active tab.
+
     active: usize,
-    /// Monotonic counter for default project names.
+
     next_project_id: usize,
-    /// Persistent app config (incl. the default layout for new projects).
+
     config: Config,
-    /// Set true to show the About window.
+
     show_about: bool,
-    /// Set true to show the Info / controls window (opens on startup).
+
     show_info: bool,
-    /// Lazily-loaded logo texture shown in the Info window.
+
     info_logo: Option<egui::TextureHandle>,
-    /// Lazily-loaded logo texture shown in the About window.
+
     about_logo: Option<egui::TextureHandle>,
-    /// Lazily-loaded small `_g` logo shown (faint, non-clickable) left of the menus.
+
     menu_logo: Option<egui::TextureHandle>,
-    /// A `.rtrpf` path from the command line, opened on the first frame.
+
     pending_open: Option<PathBuf>,
-    /// Save-layout dialog state.
+
     show_save_layout: bool,
     save_layout_name: String,
-    /// First-run setup dialog (preferences location + optional install).
+
+    show_overwrite_confirm: bool,
+
+    overwrite_dont_ask: bool,
+
     show_first_run: bool,
-    /// First-run choice: store preferences next to the exe (portable) vs Documents.
+
     first_run_portable: bool,
-    /// First-run choice: install to Program Files + add a Start Menu shortcut.
+
     first_run_install: bool,
-    /// First-run choice: delete the current exe after installing (move, not copy).
-    first_run_delete_old: bool,
-    /// Receiver for the background update check spawned at startup.
+
     update_rx: Option<std::sync::mpsc::Receiver<crate::update::Outcome>>,
-    /// Showing the "unsaved changes" confirmation before quitting.
+
     confirm_quit: bool,
-    /// Set once the user has confirmed quitting, so the next close isn't vetoed.
+
     allow_close: bool,
-    /// `ctx.input().time` of the last autosave, for the ~30s cadence.
+
     last_autosave: f64,
-    /// Crash-recovery: autosaves offered after an unclean shutdown, and whether
-    /// the recovery prompt is showing.
+
     recover_entries: Vec<crate::autosave::Recoverable>,
     show_recover: bool,
+
+    recovery_pending: bool,
 }
 
-/// Autosave cadence, in seconds.
 const AUTOSAVE_INTERVAL: f64 = 30.0;
 
-/// The controls / quick-help text shown in the Info window. Edit `src/info.md`
-/// to change it (embedded at build time).
 const INFO_MARKDOWN: &str = include_str!("info.md");
 
-/// The banner logo shown at the top of the Info window (referenced from
-/// `info.md` as `logo_long_g.png`).
 const INFO_LOGO_PNG: &[u8] = include_bytes!("logo_long_g.png");
 
-/// The square brand logo: shown (centered) in the About window and (faintly) as
-/// the menu-bar logo. The neutral `_g` variant reads on light or dark.
 const ABOUT_LOGO_PNG: &[u8] = include_bytes!("logo_g.png");
 
 impl App {
@@ -89,28 +82,30 @@ impl App {
             pending_open: startup_open,
             show_save_layout: false,
             save_layout_name: String::new(),
+            show_overwrite_confirm: false,
+            overwrite_dont_ask: false,
             show_first_run: first_run,
             first_run_portable: false,
             first_run_install: false,
-            first_run_delete_old: false,
-            // Check for a newer release in the background and show the result.
+
             update_rx: Some(crate::update::spawn_check()),
             confirm_quit: false,
             allow_close: false,
             last_autosave: 0.0,
             recover_entries: Vec::new(),
             show_recover: false,
+            recovery_pending: false,
         };
-        // Begin the autosave session and detect an unclean previous shutdown.
+
         let (crashed, recoverable) = crate::autosave::start_session();
         app.recover_entries = recoverable;
         app.show_recover = crashed && !app.recover_entries.is_empty();
+
+        app.recovery_pending = app.show_recover;
         app.projects[0].set_status("Searching for updates…");
         app
     }
 
-    /// The dock layout a new project should start from (the configured default,
-    /// falling back to the built-in if it can't be loaded).
     fn new_project_dock(&self) -> DockState<PanelTab> {
         layouts::load_layout(&self.config.default_layout)
             .unwrap_or_else(|_| layouts::builtin_default())
@@ -125,7 +120,7 @@ impl App {
 
     fn close_project(&mut self, index: usize) {
         if self.projects.len() <= 1 {
-            return; // always keep at least one project open
+            return;
         }
         self.projects.remove(index);
         if self.active >= self.projects.len() {
@@ -145,8 +140,6 @@ impl App {
         self.active_project().set_error(msg);
     }
 
-    // --- Layout actions -----------------------------------------------------
-
     fn apply_layout(&mut self, name: &str) {
         match layouts::load_layout(name) {
             Ok(dock) => {
@@ -156,8 +149,6 @@ impl App {
             Err(e) => self.set_error(format!("Load layout failed: {e}")),
         }
     }
-
-    // --- Undo / redo --------------------------------------------------------
 
     fn undo(&mut self, ctx: &egui::Context) {
         let active = self.active;
@@ -177,10 +168,6 @@ impl App {
         }
     }
 
-    // --- Project file save / open -------------------------------------------
-
-    /// "Save": overwrite the project's existing file if it has one, else fall
-    /// back to "Save As".
     fn save_project(&mut self) {
         let Some(path) = self.active_project().path.clone() else {
             self.save_project_dialog();
@@ -195,7 +182,6 @@ impl App {
         }
     }
 
-    /// "Save As": always prompt for a path, then remember it for later "Save".
     fn save_project_dialog(&mut self) {
         let suggested = format!("{}.{}", self.active_project().name, crate::proj_io::EXTENSION);
         let picked = rfd::FileDialog::new()
@@ -206,7 +192,7 @@ impl App {
         if let Some(path) = picked {
             match crate::proj_io::save(&path, &self.projects[self.active]) {
                 Ok(()) => {
-                    // Saving names the project after the file and clears the `*`.
+
                     if let Some(stem) = path.file_stem() {
                         self.active_project().name = stem.to_string_lossy().into_owned();
                     }
@@ -220,7 +206,6 @@ impl App {
         }
     }
 
-    /// Records `path` in the recent-files list and persists the config.
     fn remember_recent(&mut self, path: &std::path::Path) {
         self.config.push_recent(path);
         let _ = layouts::save_config(&self.config);
@@ -232,19 +217,16 @@ impl App {
             .add_filter("Rick's Texture Ripper Project", &[crate::proj_io::EXTENSION])
             .pick_file();
         if let Some(path) = picked {
-            // Defer the load by one frame so the wait cursor (set in `update`) is
-            // shown while the project decodes.
+
             self.pending_open = Some(path);
         }
     }
 
-    /// Opens the project at `path` into a new tab (used by the Open dialog, the
-    /// command line, and double-clicked `.rtrpf` files).
     fn open_project_path(&mut self, ctx: &egui::Context, path: &std::path::Path) {
         match crate::proj_io::open(ctx, path) {
             Ok(mut project) => {
                 project.path = Some(path.to_path_buf());
-                // Reuse the initial pristine "unnamed" tab if it's untouched.
+
                 if self.projects.len() == 1
                     && self.projects[0].images.is_empty()
                     && !self.projects[0].modified
@@ -273,8 +255,6 @@ impl App {
         }
     }
 
-    /// Picking a custom default also spins up a fresh, editable project that
-    /// starts from it (the built-in "default" stays read-only).
     fn set_default_layout(&mut self, name: &str) {
         self.config.default_layout = name.to_string();
         if let Err(e) = layouts::save_config(&self.config) {
@@ -307,24 +287,19 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Apply the chosen theme each frame (cheap; egui caches it). The dock and
-        // canvas backgrounds read `dark_mode` from these visuals.
+
         ctx.set_visuals(if self.config.light_mode {
             egui::Visuals::light()
         } else {
             egui::Visuals::dark()
         });
 
-        // Surface the background update-check result in the status bar.
         self.poll_update_check(ctx);
 
-        // Open a project passed on the command line / by double-click, once we
-        // have a context to upload its textures with.
         if let Some(path) = self.pending_open.take() {
             self.open_project_path(ctx, &path);
         }
 
-        // Drag-and-drop: dropping image files anywhere on the window adds them.
         self.handle_dropped_files(ctx);
 
         self.handle_shortcuts(ctx);
@@ -332,16 +307,14 @@ impl eframe::App for App {
         self.about_window(ctx);
         self.info_window(ctx);
         self.save_layout_window(ctx);
+        self.overwrite_confirm_window(ctx);
         self.first_run_window(ctx);
         self.recover_window(ctx);
         self.quit_guard(ctx);
 
-        // While the pointer is held (dragging a handle/slider) extract rips at a
-        // cheap preview resolution; once the user settles, rerun at full quality.
         let busy = ctx.input(|i| i.pointer.any_down());
         let project = &mut self.projects[self.active];
-        // Heavy CPU work this frame (full-res rip recompute / dirty images), used
-        // below to show a background-progress cursor.
+
         let recomputing = project.needs_full
             || project.rips.iter().any(|r| r.dirty)
             || project.images.iter().any(|i| i.dirty);
@@ -356,18 +329,12 @@ impl eframe::App for App {
         }
         crate::atlas::repack_if_needed(project);
 
-        // Commit an undo step once the user has settled (not mid-drag).
         if !busy {
             project.commit_history_if_changed();
         }
 
-        // Permanent bottom chin bar (build info + transient status). Added before
-        // the central dock area so it reserves its strip at the bottom.
         self.status_bar(ctx);
 
-        // Render the dock against the active project. The dock state lives inside
-        // the project, so temporarily swap it out to avoid aliasing the project
-        // reference held by the viewer, then put it back.
         let active = self.active;
         let mut dock = std::mem::replace(
             &mut self.projects[active].dock_state,
@@ -383,16 +350,11 @@ impl eframe::App for App {
         }
         self.projects[active].dock_state = dock;
 
-        // Reflect work in the OS cursor with a single wait cursor (set last so it
-        // wins over panel cursors): while a project loads, or while rips/images
-        // are (re)computing and the user isn't mid-drag.
         if self.pending_open.is_some() || (recomputing && !busy) {
             ctx.set_cursor_icon(egui::CursorIcon::Wait);
             ctx.request_repaint();
         }
 
-        // Periodic autosave of modified projects (writes happen off-thread). The
-        // timer wake keeps it firing even while the app is idle.
         let now = ctx.input(|i| i.time);
         if now - self.last_autosave >= AUTOSAVE_INTERVAL {
             self.last_autosave = now;
@@ -403,16 +365,13 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// Global keyboard shortcuts. `consume_key` matches *logically* (it ignores
-    /// extra modifiers), so the Shift variants are checked first and consume the
-    /// event before the plain ones can match.
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
         let ctrl = Modifiers::CTRL;
         let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
         let alt = Modifiers::ALT;
 
-        // Alt+1..4 toggle the workspace panels.
         if ctx.input_mut(|i| i.consume_key(alt, Key::Num1)) {
             self.toggle_panel(PanelTab::Texture);
         }
@@ -439,7 +398,6 @@ impl App {
             self.open_project_dialog();
         }
 
-        // Redo before undo so Ctrl+Shift+Z isn't swallowed by the plain Ctrl+Z.
         if ctx.input_mut(|i| i.consume_key(ctrl, Key::Y))
             || ctx.input_mut(|i| i.consume_key(ctrl_shift, Key::Z))
         {
@@ -449,7 +407,6 @@ impl App {
             self.undo(ctx);
         }
 
-        // Save As before Save for the same reason.
         if ctx.input_mut(|i| i.consume_key(ctrl_shift, Key::S)) {
             self.save_project_dialog();
         }
@@ -463,8 +420,6 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // Delete / Backspace removes the selected rip, else the active image.
-        // Guarded so it never fires while typing into a text field / drag value.
         if !ctx.wants_keyboard_input() {
             let del = ctx.input_mut(|i| {
                 i.consume_key(Modifiers::NONE, Key::Delete)
@@ -476,8 +431,6 @@ impl App {
         }
     }
 
-    /// Removes the selected rip if one is selected, otherwise the active image.
-    /// Shared by the Delete/Backspace shortcut.
     fn delete_selection(&mut self) {
         let project = &mut self.projects[self.active];
         if let Some(sel) = project.editor.selected.filter(|&s| s < project.rips.len()) {
@@ -488,7 +441,7 @@ impl App {
     }
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
-        // Decode the small `_g` menu-bar logo once.
+
         if self.menu_logo.is_none() {
             if let Ok(img) = image::load_from_memory(ABOUT_LOGO_PNG) {
                 let rgba = img.to_rgba8();
@@ -498,19 +451,16 @@ impl App {
                     Some(ctx.load_texture("menu_logo", color, egui::TextureOptions::LINEAR));
             }
         }
-        // Cloned out so the panel closure can still borrow `self` mutably. The logo
-        // is fainter in light mode (35% transparent) than dark (80% transparent).
+
         let menu_logo = self.menu_logo.clone();
         let menu_logo_alpha: u8 = if self.config.light_mode { 166 } else { 51 };
 
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            // Lay the whole row out left-to-right, vertically centered, so the
-            // menu text lines up with the taller framed project tabs.
+
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.set_min_height(26.0);
                 egui::menu::bar(ui, |ui| {
-                // A small, faint, non-clickable logo flush to the left of the File
-                // menu (fainter in light mode — see `menu_logo_alpha`).
+
                 if let Some(tex) = &menu_logo {
                     let height = 18.0;
                     let native = tex.size_vec2();
@@ -557,16 +507,13 @@ impl App {
                         ui.close_menu();
                     }
                     ui.menu_button("Open Recent", |ui| {
-                        // Force a sensible width band so the submenu neither
-                        // collapses to tiny file-name buttons nor stretches to a
-                        // full path; over-long names are cut with a trailing
-                        // ellipsis (the full path stays in the hover tooltip).
+
                         ui.set_min_width(114.0);
                         ui.set_max_width(228.0);
                         if self.config.recent_files.is_empty() {
                             ui.add_enabled(false, egui::Button::new("(none)"));
                         } else {
-                            // Clone so the loop can mutably borrow `self` to open.
+
                             for path in self.config.recent_files.clone() {
                                 let full = path
                                     .file_name()
@@ -581,7 +528,7 @@ impl App {
                                     .on_hover_text(path.display().to_string())
                                     .clicked()
                                 {
-                                    // Defer so the wait cursor shows while loading.
+
                                     self.pending_open = Some(path.clone());
                                     ui.close_menu();
                                 }
@@ -677,8 +624,7 @@ impl App {
                         ui.close_menu();
                     }
                     if ui.button("Setup…").clicked() {
-                        // Reopen the first-run dialog, reflecting the current
-                        // storage choice.
+
                         self.first_run_portable = layouts::is_portable();
                         self.show_first_run = true;
                         ui.close_menu();
@@ -689,8 +635,6 @@ impl App {
                     }
                 });
 
-                // Project tabs share the menu bar row: a margin, then the tabs
-                // pushed to the right of the menus.
                 ui.add_space(16.0);
                 ui.separator();
                 self.project_tabs(ui);
@@ -699,12 +643,9 @@ impl App {
         });
     }
 
-    /// The Window menu: toggle each workspace panel on/off in the active
-    /// project's dock. A checkmark shows which panels are currently open.
     fn window_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Window", |ui| {
-            // A leading check glyph marks open panels; the Alt+N shortcut is shown
-            // greyed on the right via `shortcut_text`.
+
             for (tab, name, shortcut) in [
                 (PanelTab::Texture, "Texture View", "Alt+1"),
                 (PanelTab::Atlas, "Atlas View", "Alt+2"),
@@ -731,7 +672,6 @@ impl App {
         });
     }
 
-    /// Shows the panel if it's hidden, or removes it if it's currently docked.
     fn toggle_panel(&mut self, tab: PanelTab) {
         let dock = &mut self.active_project().dock_state;
         if let Some(loc) = dock.find_tab(&tab) {
@@ -786,7 +726,6 @@ impl App {
         });
     }
 
-    /// Photoshop-style project tabs, drawn inline in the menu-bar row.
     fn project_tabs(&mut self, ui: &mut egui::Ui) {
         let mut select: Option<usize> = None;
         let mut close: Option<usize> = None;
@@ -794,8 +733,7 @@ impl App {
         let multiple = self.projects.len() > 1;
         for (i, project) in self.projects.iter().enumerate() {
             let selected = i == self.active;
-            // Drawn inline (no group frame) so the tabs sit on the same vertical
-            // centerline as the menu-bar text. A trailing `*` marks unsaved work.
+
             let title = if project.modified {
                 format!("{} *", project.name)
             } else {
@@ -823,7 +761,7 @@ impl App {
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {
-        // Decode the logo once, on first show.
+
         if self.about_logo.is_none() {
             if let Ok(img) = image::load_from_memory(ABOUT_LOGO_PNG) {
                 let rgba = img.to_rgba8();
@@ -850,9 +788,7 @@ impl App {
                     }
                     ui.add_space(10.0);
                     ui.heading("Rick's Texture Ripper");
-                    // Center the "l30z - 2026" row: a plain nested horizontal would
-                    // span the full width and left-align, so measure the row and
-                    // allocate exactly that width for `vertical_centered` to center.
+
                     let (link, year, gap) = ("l30z", "- 2026", 4.0);
                     let font = egui::TextStyle::Body.resolve(ui.style());
                     let measure = |ui: &egui::Ui, s: &str| {
@@ -868,9 +804,7 @@ impl App {
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.spacing_mut().item_spacing.x = gap;
-                            // Custom link: always white + underlined, pointing-hand
-                            // cursor on hover (egui's default link is blue and only
-                            // underlines on hover).
+
                             let text = egui::RichText::new(link)
                                 .color(egui::Color32::WHITE)
                                 .underline();
@@ -894,10 +828,6 @@ impl App {
         self.show_about = open;
     }
 
-    /// The Info / quick-controls window (opens on startup, reopenable via
-    /// Help > Info). Content is the embedded `info.md`, lightly rendered.
-    /// Polls the background update check and, once it finishes, replaces the
-    /// "Searching for updates…" status with the result.
     fn poll_update_check(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.update_rx else { return };
         match rx.try_recv() {
@@ -916,7 +846,7 @@ impl App {
                 }
                 self.update_rx = None;
             }
-            // Still running: keep the UI ticking so we pick the result up promptly.
+
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(400));
             }
@@ -924,7 +854,6 @@ impl App {
         }
     }
 
-    /// First-run setup: choose where preferences live and optionally install.
     fn first_run_window(&mut self, ctx: &egui::Context) {
         if !self.show_first_run {
             return;
@@ -955,8 +884,7 @@ impl App {
                 #[cfg(windows)]
                 {
                     ui.add_space(10.0);
-                    // Installing a debug build makes no sense (it's not a
-                    // distributable exe), so the option is release-only.
+
                     if cfg!(debug_assertions) {
                         ui.weak("Install to Program Files is disabled in debug builds.");
                     } else {
@@ -965,14 +893,6 @@ impl App {
                             "Install to Program Files and add a Start Menu shortcut",
                         );
                         ui.weak("    Asks for administrator approval (UAC); the app reopens from there.");
-                        if self.first_run_install {
-                            ui.indent("install_opts", |ui| {
-                                ui.checkbox(
-                                    &mut self.first_run_delete_old,
-                                    "Delete the current copy after installing",
-                                );
-                            });
-                        }
                     }
                 }
 
@@ -987,17 +907,13 @@ impl App {
         if finish {
             self.finish_first_run(ctx);
         } else if !open {
-            // Dismissed via the window's close button without applying.
+
             self.show_first_run = false;
         }
     }
 
-    /// Applies the first-run choices: storage location, saved config, optional
-    /// (elevated) install. On install the app closes itself so the elevated
-    /// worker can replace/relaunch it from the new path.
     fn finish_first_run(&mut self, ctx: &egui::Context) {
-        // Apply the chosen storage location (explicitly either way so switching
-        // back to Documents from portable also takes effect).
+
         let dir = if self.first_run_portable {
             layouts::portable_dir()
         } else {
@@ -1006,20 +922,16 @@ impl App {
         if let Some(d) = dir {
             layouts::set_app_dir(d);
         }
-        // Writing the config marks setup complete (it now exists, so the dialog
-        // won't reappear next launch).
+
         if let Err(e) = layouts::save_config(&self.config) {
             self.set_error(format!("Couldn't save preferences: {e}"));
         }
         self.show_first_run = false;
 
-        // Never install a debug build (it's not a distributable exe).
         if self.first_run_install && !cfg!(debug_assertions) {
-            match crate::install::install_to_program_files(self.first_run_delete_old) {
+            match crate::install::install_to_program_files() {
                 Ok(()) => {
-                    // The elevated worker waits for us to exit, then relaunches
-                    // from Program Files (and deletes this exe if requested). This
-                    // is an explicit, deliberate close, so bypass the quit guard.
+
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -1028,13 +940,10 @@ impl App {
         }
     }
 
-    /// True when any open project has unsaved changes.
     fn has_unsaved(&self) -> bool {
         self.projects.iter().any(|p| p.modified)
     }
 
-    /// Saves every modified project for a quit (prompting Save As for un-named
-    /// ones). Returns false if any save was cancelled/failed (so quit aborts).
     fn save_all_for_quit(&mut self) -> bool {
         for i in 0..self.projects.len() {
             if self.projects[i].modified {
@@ -1048,17 +957,13 @@ impl App {
         true
     }
 
-    /// Intercepts close requests (window X / Alt+F4 / OS shutdown / Exit / Ctrl+Q)
-    /// and confirms when there are unsaved changes, vetoing the close until the
-    /// user decides.
     fn quit_guard(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) {
             if !self.allow_close && self.has_unsaved() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm_quit = true;
-            } else {
-                // A close is actually proceeding — record a clean shutdown so the
-                // next start doesn't treat it as a crash.
+            } else if !self.recovery_pending {
+
                 crate::autosave::mark_clean_shutdown();
             }
         }
@@ -1099,8 +1004,6 @@ impl App {
         }
     }
 
-    /// Crash-recovery prompt: shown at startup when the previous run didn't shut
-    /// down cleanly and autosaves are available.
     fn recover_window(&mut self, ctx: &egui::Context) {
         if !self.show_recover {
             return;
@@ -1133,14 +1036,14 @@ impl App {
             });
 
         if recover {
-            // Clone the paths out so we can mutably borrow `self` to open them.
+
             let paths: Vec<std::path::PathBuf> =
                 self.recover_entries.iter().map(|e| e.path.clone()).collect();
             let mut opened = 0;
             for path in &paths {
                 match crate::autosave::open_recovered(ctx, path) {
                     Ok(project) => {
-                        // Replace the pristine startup tab with the first recovery.
+
                         if opened == 0
                             && self.projects.len() == 1
                             && self.projects[0].images.is_empty()
@@ -1160,15 +1063,16 @@ impl App {
                 self.set_status(format!("Recovered {opened} project(s)."));
             }
             self.show_recover = false;
+
+            self.recovery_pending = false;
         } else if dismiss {
             self.show_recover = false;
+            self.recovery_pending = false;
         }
     }
 
-    /// Adds any image files dropped onto the window, and shows a hover overlay
-    /// while files are dragged over it. The whole window is the drop target.
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
-        // Overlay hint while files hover over the window.
+
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.screen_rect();
             let painter = ctx.layer_painter(egui::LayerId::new(
@@ -1200,11 +1104,11 @@ impl App {
     }
 
     fn info_window(&mut self, ctx: &egui::Context) {
-        // Hold the Info window back until the first-run setup dialog is dismissed.
+
         if self.show_first_run {
             return;
         }
-        // Decode the banner logo once, on first show.
+
         if self.info_logo.is_none() {
             if let Ok(img) = image::load_from_memory(INFO_LOGO_PNG) {
                 let rgba = img.to_rgba8();
@@ -1230,22 +1134,19 @@ impl App {
             });
         self.show_info = open;
 
-        // The user closed the Info window: remember not to auto-open it next time.
         if was_open && !open && self.config.show_info_on_startup {
             self.config.show_info_on_startup = false;
             let _ = layouts::save_config(&self.config);
         }
     }
 
-    /// Permanent full-width bottom bar: build info on the left, the active
-    /// project's transient status (with a dismiss `x`) on the right when set.
     fn status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar")
             .exact_height(26.0)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(6.0);
-                    // Build info is informational only — not selectable for copy.
+
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!(
@@ -1259,14 +1160,11 @@ impl App {
                         .selectable(false),
                     );
 
-                    // Status + dismiss, pushed to the right edge.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let project = &mut self.projects[self.active];
                         if let Some(status) = project.status.clone() {
                             if project.status_error {
-                                // Errors: soft dark-red rounded background covering
-                                // the whole message, and selectable so it can be
-                                // copied.
+
                                 egui::Frame::new()
                                     .fill(egui::Color32::from_rgb(92, 34, 34))
                                     .corner_radius(5.0)
@@ -1331,22 +1229,73 @@ impl App {
             self.show_save_layout = false;
         }
         if do_save {
+            self.attempt_save_layout();
+        }
+    }
+
+    fn attempt_save_layout(&mut self) {
+        let name = self.save_layout_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if self.config.confirm_layout_overwrite && layouts::layout_exists(&name) {
+            self.overwrite_dont_ask = false;
+            self.show_overwrite_confirm = true;
+        } else {
+            self.save_current_layout();
+        }
+    }
+
+    fn overwrite_confirm_window(&mut self, ctx: &egui::Context) {
+        if !self.show_overwrite_confirm {
+            return;
+        }
+        let name = self.save_layout_name.trim().to_string();
+        let mut open = true;
+        let mut confirm = false;
+        egui::Window::new("Overwrite layout?")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!("A layout named \"{name}\" already exists. Overwrite it?"));
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.overwrite_dont_ask, "Don't ask again");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Overwrite").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.show_overwrite_confirm = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_overwrite_confirm = false;
+        }
+        if confirm {
+
+            if self.overwrite_dont_ask {
+                self.config.confirm_layout_overwrite = false;
+                if let Err(e) = layouts::save_config(&self.config) {
+                    self.set_error(format!("Could not save config: {e}"));
+                }
+            }
+            self.show_overwrite_confirm = false;
             self.save_current_layout();
         }
     }
 }
 
-/// Minimal Markdown renderer for the Info window: handles `![alt](img)` images
-/// (drawn from `logo`, scaled to fit width), headings (`#`/`##`/`###`), `-`/`*`
-/// bullets, blank-line spacing, and inline `**bold**`. Anything else renders as
-/// a wrapped paragraph.
 fn render_markdown(ui: &mut egui::Ui, md: &str, logo: Option<&egui::TextureHandle>) {
     for raw in md.lines() {
         let line = raw.trim_end();
         if let Some(alt) = parse_image(line) {
             match logo {
                 Some(tex) => {
-                    // Scale the banner down to fit the available width (never up).
+
                     let native = tex.size_vec2();
                     let scale = (ui.available_width() / native.x.max(1.0)).min(1.0);
                     ui.add_space(2.0);
@@ -1378,12 +1327,10 @@ fn render_markdown(ui: &mut egui::Ui, md: &str, logo: Option<&egui::TextureHandl
     }
 }
 
-/// Parses a Markdown image line `![alt](path)`, returning the alt text. The path
-/// is ignored — the Info window only has one (the embedded banner logo).
 fn parse_image(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("![")?;
     let close = rest.find("](")?;
-    // Must be a well-formed `](...)` tail to count as an image line.
+
     if rest[close..].ends_with(')') {
         Some(&rest[..close])
     } else {
@@ -1391,8 +1338,6 @@ fn parse_image(line: &str) -> Option<&str> {
     }
 }
 
-/// Truncates `s` to at most `max` characters, appending `…` when it had to cut
-/// (so over-long recent-file names don't blow out the Open Recent submenu).
 fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -1403,8 +1348,6 @@ fn ellipsize(s: &str, max: usize) -> String {
     out
 }
 
-/// Renders a single line, turning `**bold**` spans strong. Item spacing is zeroed
-/// so adjacent spans read as continuous text.
 fn render_inline(ui: &mut egui::Ui, text: &str) {
     ui.spacing_mut().item_spacing.x = 0.0;
     let mut bold = false;
