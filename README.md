@@ -6,7 +6,7 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
 <p align="center">
 <img src="Screen/Screenshot1.png" alt="Rick's Texture Ripper" width="320">
 </p>
-<p height="20px"></p>
+<p></p>
 <p align="center">
 <img src="Screen/Screenshot2.png" alt="Rick's Texture Ripper" width="320">
 </p>
