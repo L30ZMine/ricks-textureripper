@@ -123,17 +123,21 @@ fn scale_rips_on_image(project: &mut Project, image_idx: usize, sx: f32, sy: f32
 // Panel UI
 // ---------------------------------------------------------------------------
 
-/// Draws the Image Edit panel. Edits the selected rip if one is selected,
-/// otherwise the active image.
-pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
-    ui.heading("Image Edit");
-    ui.separator();
+/// At or above this panel width the editor splits into two equal columns
+/// (sliders on the left, the remaining tools on the right); below it everything
+/// stacks in one column.
+const WIDE_THRESHOLD: f32 = 470.0;
 
+/// Draws the Image Edit panel. Edits the selected rip if one is selected,
+/// otherwise the active image. No title/heading — the panel is title-only via
+/// the dock tab.
+pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
+    let wide = ui.available_width() >= WIDE_THRESHOLD;
     let rip_target = project.editor.selected.filter(|&i| i < project.rips.len());
     if let Some(ri) = rip_target {
-        rip_editor(ui, project, ri);
+        rip_editor(ui, project, ri, wide);
     } else if let Some(ii) = project.active_image.filter(|&i| i < project.images.len()) {
-        image_editor(ui, project, ii);
+        image_editor(ui, project, ii, wide);
     } else {
         ui.weak("Select an image or a rip to edit.");
     }
@@ -154,17 +158,31 @@ fn adjustment_sliders(ui: &mut egui::Ui, adj: &mut Adjustments) -> bool {
     changed
 }
 
-fn rip_editor(ui: &mut egui::Ui, project: &mut Project, ri: usize) {
-    ui.label(format!("Editing rip \"{}\"", project.rips[ri].name));
+fn rip_editor(ui: &mut egui::Ui, project: &mut Project, ri: usize, wide: bool) {
+    let dirty = if wide {
+        ui.columns(2, |c| {
+            let mut d = adjustment_sliders(&mut c[0], &mut project.rips[ri].adjust);
+            d |= rip_tools(&mut c[1], &mut project.rips[ri]);
+            d
+        })
+    } else {
+        let mut d = adjustment_sliders(ui, &mut project.rips[ri].adjust);
+        ui.separator();
+        d |= rip_tools(ui, &mut project.rips[ri]);
+        d
+    };
 
+    if dirty {
+        project.rips[ri].dirty = true;
+    }
+}
+
+/// The non-slider rip controls (output-size override + reset). Returns dirty.
+fn rip_tools(ui: &mut egui::Ui, rip: &mut crate::project::Rip) -> bool {
     let mut dirty = false;
-    dirty |= adjustment_sliders(ui, &mut project.rips[ri].adjust);
 
-    ui.separator();
-
-    // Optional output-size override.
-    let natural = project.rips[ri].output.as_ref().map(|o| o.size);
-    let mut resize = project.rips[ri].resize;
+    let natural = rip.output.as_ref().map(|o| o.size);
+    let mut resize = rip.resize;
     let mut custom = resize.is_some();
     if ui.checkbox(&mut custom, "Custom output size").changed() {
         resize = if custom {
@@ -189,29 +207,42 @@ fn rip_editor(ui: &mut egui::Ui, project: &mut Project, ri: usize) {
     } else if let Some(n) = natural {
         ui.weak(format!("Output: {}×{} px", n[0], n[1]));
     }
-    project.rips[ri].resize = resize;
+    rip.resize = resize;
 
     ui.separator();
     if ui.button("Reset adjustments").clicked() {
-        project.rips[ri].adjust = Adjustments::default();
-        project.rips[ri].resize = None;
+        rip.adjust = Adjustments::default();
+        rip.resize = None;
         dirty = true;
     }
 
+    dirty
+}
+
+fn image_editor(ui: &mut egui::Ui, project: &mut Project, ii: usize, wide: bool) {
+    let dirty = if wide {
+        ui.columns(2, |c| {
+            let mut d = adjustment_sliders(&mut c[0], &mut project.images[ii].adjust);
+            d |= image_tools(&mut c[1], project, ii);
+            d
+        })
+    } else {
+        let mut d = adjustment_sliders(ui, &mut project.images[ii].adjust);
+        ui.separator();
+        d |= image_tools(ui, project, ii);
+        d
+    };
+
     if dirty {
-        project.rips[ri].dirty = true;
+        project.images[ii].dirty = true;
     }
 }
 
-fn image_editor(ui: &mut egui::Ui, project: &mut Project, ii: usize) {
-    ui.label(format!("Editing image \"{}\"", project.images[ii].name));
-
+/// The non-slider image controls (resize + reset). Returns dirty. Rips on this
+/// image are rescaled so they stay locked to the same image features.
+fn image_tools(ui: &mut egui::Ui, project: &mut Project, ii: usize) -> bool {
     let mut dirty = false;
-    dirty |= adjustment_sliders(ui, &mut project.images[ii].adjust);
 
-    ui.separator();
-
-    // Resize. Rips on this image are rescaled so they stay aligned.
     let orig = (
         project.images[ii].original.width() as usize,
         project.images[ii].original.height() as usize,
@@ -241,13 +272,10 @@ fn image_editor(ui: &mut egui::Ui, project: &mut Project, ii: usize) {
         dirty = true;
     }
 
-    ui.separator();
     if ui.button("Reset adjustments").clicked() {
         project.images[ii].adjust = Adjustments::default();
         dirty = true;
     }
 
-    if dirty {
-        project.images[ii].dirty = true;
-    }
+    dirty
 }

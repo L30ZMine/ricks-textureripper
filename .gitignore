@@ -8,3 +8,7 @@
 *.pdb
 
 CLAUDE.md
+/.claude
+CLAUDEPROMPT.txt
+/.claude
+.claude/settings.local.json

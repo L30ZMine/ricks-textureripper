@@ -1,6 +1,8 @@
 //! Top-level application: window chrome (menu bar + project tab bar) and the
 //! dockable workspace. Each project owns its own dock layout.
 
+use std::path::PathBuf;
+
 use egui_dock::{DockArea, DockState, Style};
 
 use crate::layouts::{self, Config};
@@ -22,6 +24,10 @@ pub struct App {
     show_info: bool,
     /// Lazily-loaded logo texture shown in the Info window.
     info_logo: Option<egui::TextureHandle>,
+    /// Lazily-loaded logo texture shown in the About window.
+    about_logo: Option<egui::TextureHandle>,
+    /// A `.rtrpf` path from the command line, opened on the first frame.
+    pending_open: Option<PathBuf>,
     /// Save-layout dialog state.
     show_save_layout: bool,
     save_layout_name: String,
@@ -35,19 +41,25 @@ const INFO_MARKDOWN: &str = include_str!("info.md");
 /// `info.md` as `logo_long_w.png`).
 const INFO_LOGO_PNG: &[u8] = include_bytes!("logo_long_w.png");
 
+/// The square logo shown (centered) at the top of the About window.
+const ABOUT_LOGO_PNG: &[u8] = include_bytes!("logo_w.png");
+
 impl App {
-    pub fn new() -> Self {
+    pub fn new(startup_open: Option<PathBuf>) -> Self {
         let config = layouts::load_config();
         let dock = layouts::load_layout(&config.default_layout)
             .unwrap_or_else(|_| layouts::builtin_default());
+        let show_info = config.show_info_on_startup;
         Self {
             projects: vec![Project::new("unnamed", dock)],
             active: 0,
             next_project_id: 2,
             config,
             show_about: false,
-            show_info: true,
+            show_info,
             info_logo: None,
+            about_logo: None,
+            pending_open: startup_open,
             show_save_layout: false,
             save_layout_name: String::new(),
         }
@@ -82,7 +94,11 @@ impl App {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.active_project().status = Some(msg.into());
+        self.active_project().set_status(msg);
+    }
+
+    fn set_error(&mut self, msg: impl Into<String>) {
+        self.active_project().set_error(msg);
     }
 
     // --- Layout actions -----------------------------------------------------
@@ -93,7 +109,7 @@ impl App {
                 self.active_project().dock_state = dock;
                 self.set_status(format!("Loaded layout \"{name}\"."));
             }
-            Err(e) => self.set_status(format!("Load layout failed: {e}")),
+            Err(e) => self.set_error(format!("Load layout failed: {e}")),
         }
     }
 
@@ -119,10 +135,27 @@ impl App {
 
     // --- Project file save / open -------------------------------------------
 
+    /// "Save": overwrite the project's existing file if it has one, else fall
+    /// back to "Save As".
+    fn save_project(&mut self) {
+        let Some(path) = self.active_project().path.clone() else {
+            self.save_project_dialog();
+            return;
+        };
+        match crate::proj_io::save(&path, &self.projects[self.active]) {
+            Ok(()) => {
+                self.active_project().modified = false;
+                self.set_status(format!("Saved {}", path.display()));
+            }
+            Err(e) => self.set_error(format!("Save failed: {e}")),
+        }
+    }
+
+    /// "Save As": always prompt for a path, then remember it for later "Save".
     fn save_project_dialog(&mut self) {
         let suggested = format!("{}.{}", self.active_project().name, crate::proj_io::EXTENSION);
         let picked = rfd::FileDialog::new()
-            .set_title("Save Project")
+            .set_title("Save Project As")
             .add_filter("Rick's Texture Ripper Project", &[crate::proj_io::EXTENSION])
             .set_file_name(suggested)
             .save_file();
@@ -134,11 +167,19 @@ impl App {
                         self.active_project().name = stem.to_string_lossy().into_owned();
                     }
                     self.active_project().modified = false;
+                    self.active_project().path = Some(path.clone());
+                    self.remember_recent(&path);
                     self.set_status(format!("Saved {}", path.display()));
                 }
-                Err(e) => self.set_status(format!("Save failed: {e}")),
+                Err(e) => self.set_error(format!("Save failed: {e}")),
             }
         }
+    }
+
+    /// Records `path` in the recent-files list and persists the config.
+    fn remember_recent(&mut self, path: &std::path::Path) {
+        self.config.push_recent(path);
+        let _ = layouts::save_config(&self.config);
     }
 
     fn open_project_dialog(&mut self, ctx: &egui::Context) {
@@ -147,14 +188,31 @@ impl App {
             .add_filter("Rick's Texture Ripper Project", &[crate::proj_io::EXTENSION])
             .pick_file();
         if let Some(path) = picked {
-            match crate::proj_io::open(ctx, &path) {
-                Ok(project) => {
+            self.open_project_path(ctx, &path);
+        }
+    }
+
+    /// Opens the project at `path` into a new tab (used by the Open dialog, the
+    /// command line, and double-clicked `.rtrpf` files).
+    fn open_project_path(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        match crate::proj_io::open(ctx, path) {
+            Ok(mut project) => {
+                project.path = Some(path.to_path_buf());
+                // Reuse the initial pristine "unnamed" tab if it's untouched.
+                if self.projects.len() == 1
+                    && self.projects[0].images.is_empty()
+                    && !self.projects[0].modified
+                    && self.projects[0].path.is_none()
+                {
+                    self.projects[0] = project;
+                } else {
                     self.projects.push(project);
-                    self.active = self.projects.len() - 1;
-                    self.set_status(format!("Opened {}", path.display()));
                 }
-                Err(e) => self.set_status(format!("Open failed: {e}")),
+                self.active = self.projects.len() - 1;
+                self.remember_recent(path);
+                self.set_status(format!("Opened {}", path.display()));
             }
+            Err(e) => self.set_error(format!("Open failed: {e}")),
         }
     }
 
@@ -165,7 +223,7 @@ impl App {
                 self.show_save_layout = false;
                 self.set_status(format!("Saved layout \"{name}\"."));
             }
-            Err(e) => self.set_status(format!("Save layout failed: {e}")),
+            Err(e) => self.set_error(format!("Save layout failed: {e}")),
         }
     }
 
@@ -174,7 +232,7 @@ impl App {
     fn set_default_layout(&mut self, name: &str) {
         self.config.default_layout = name.to_string();
         if let Err(e) = layouts::save_config(&self.config) {
-            self.set_status(format!("Could not save config: {e}"));
+            self.set_error(format!("Could not save config: {e}"));
             return;
         }
         if name.eq_ignore_ascii_case(layouts::DEFAULT_LAYOUT) {
@@ -196,13 +254,28 @@ impl App {
                 }
                 self.set_status(format!("Deleted layout \"{name}\"."));
             }
-            Err(e) => self.set_status(format!("Delete failed: {e}")),
+            Err(e) => self.set_error(format!("Delete failed: {e}")),
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply the chosen theme each frame (cheap; egui caches it). The dock and
+        // canvas backgrounds read `dark_mode` from these visuals.
+        ctx.set_visuals(if self.config.light_mode {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        });
+
+        // Open a project passed on the command line / by double-click, once we
+        // have a context to upload its textures with.
+        if let Some(path) = self.pending_open.take() {
+            self.open_project_path(ctx, &path);
+        }
+
+        self.handle_shortcuts(ctx);
         self.menu_bar(ctx);
         self.about_window(ctx);
         self.info_window(ctx);
@@ -253,6 +326,84 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Global keyboard shortcuts. `consume_key` matches *logically* (it ignores
+    /// extra modifiers), so the Shift variants are checked first and consume the
+    /// event before the plain ones can match.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        let ctrl = Modifiers::CTRL;
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        let alt = Modifiers::ALT;
+
+        // Alt+1..4 toggle the workspace panels.
+        if ctx.input_mut(|i| i.consume_key(alt, Key::Num1)) {
+            self.toggle_panel(PanelTab::Texture);
+        }
+        if ctx.input_mut(|i| i.consume_key(alt, Key::Num2)) {
+            self.toggle_panel(PanelTab::Atlas);
+        }
+        if ctx.input_mut(|i| i.consume_key(alt, Key::Num3)) {
+            self.toggle_panel(PanelTab::Rips);
+        }
+        if ctx.input_mut(|i| i.consume_key(alt, Key::Num4)) {
+            self.toggle_panel(PanelTab::ImageEdit);
+        }
+
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::R)) {
+            crate::rip_tool::add_rip(&mut self.projects[self.active]);
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::T)) {
+            crate::texture_view::open_add_image_dialog(ctx, &mut self.projects[self.active]);
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::F)) {
+            self.add_project();
+        }
+
+        // Redo before undo so Ctrl+Shift+Z isn't swallowed by the plain Ctrl+Z.
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::Y))
+            || ctx.input_mut(|i| i.consume_key(ctrl_shift, Key::Z))
+        {
+            self.redo(ctx);
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::Z)) {
+            self.undo(ctx);
+        }
+
+        // Save As before Save for the same reason.
+        if ctx.input_mut(|i| i.consume_key(ctrl_shift, Key::S)) {
+            self.save_project_dialog();
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::S)) {
+            self.save_project();
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, Key::X)) {
+            crate::atlas::export(&mut self.projects[self.active]);
+        }
+
+        // Delete / Backspace removes the selected rip, else the active image.
+        // Guarded so it never fires while typing into a text field / drag value.
+        if !ctx.wants_keyboard_input() {
+            let del = ctx.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::Delete)
+                    || i.consume_key(Modifiers::NONE, Key::Backspace)
+            });
+            if del {
+                self.delete_selection();
+            }
+        }
+    }
+
+    /// Removes the selected rip if one is selected, otherwise the active image.
+    /// Shared by the Delete/Backspace shortcut.
+    fn delete_selection(&mut self) {
+        let project = &mut self.projects[self.active];
+        if let Some(sel) = project.editor.selected.filter(|&s| s < project.rips.len()) {
+            crate::texture_view::remove_rip(project, sel);
+        } else if let Some(idx) = project.active_image.filter(|&i| i < project.images.len()) {
+            crate::texture_view::remove_image(project, idx);
+        }
+    }
+
     fn menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             // Lay the whole row out left-to-right, vertically centered, so the
@@ -261,19 +412,28 @@ impl App {
                 ui.set_min_height(26.0);
                 egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("Add Image").clicked() {
+                    if ui
+                        .add(egui::Button::new("Add Image").shortcut_text("Ctrl+T"))
+                        .clicked()
+                    {
                         crate::texture_view::open_add_image_dialog(
                             ctx,
                             &mut self.projects[self.active],
                         );
                         ui.close_menu();
                     }
-                    if ui.button("Add Rip").clicked() {
+                    if ui
+                        .add(egui::Button::new("Add Rip").shortcut_text("Ctrl+R"))
+                        .clicked()
+                    {
                         crate::rip_tool::add_rip(&mut self.projects[self.active]);
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("New Project").clicked() {
+                    if ui
+                        .add(egui::Button::new("New Project").shortcut_text("Ctrl+F"))
+                        .clicked()
+                    {
                         self.add_project();
                         ui.close_menu();
                     }
@@ -281,12 +441,62 @@ impl App {
                         self.open_project_dialog(ctx);
                         ui.close_menu();
                     }
-                    if ui.button("Save As…").clicked() {
+                    ui.menu_button("Open Recent", |ui| {
+                        // Force a sensible width band so the submenu neither
+                        // collapses to tiny file-name buttons nor stretches to a
+                        // full path; over-long names are cut with a trailing
+                        // ellipsis (the full path stays in the hover tooltip).
+                        ui.set_min_width(190.0);
+                        ui.set_max_width(380.0);
+                        if self.config.recent_files.is_empty() {
+                            ui.add_enabled(false, egui::Button::new("(none)"));
+                        } else {
+                            // Clone so the loop can mutably borrow `self` to open.
+                            for path in self.config.recent_files.clone() {
+                                let full = path
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string());
+                                let label = ellipsize(&full, 40);
+                                if ui
+                                    .add(
+                                        egui::Button::new(label)
+                                            .min_size(egui::vec2(180.0, 0.0)),
+                                    )
+                                    .on_hover_text(path.display().to_string())
+                                    .clicked()
+                                {
+                                    self.open_project_path(ctx, &path);
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Clear Recent").clicked() {
+                                self.config.recent_files.clear();
+                                let _ = layouts::save_config(&self.config);
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                    if ui
+                        .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
+                        .clicked()
+                    {
+                        self.save_project();
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add(egui::Button::new("Save As…").shortcut_text("Ctrl+Shift+S"))
+                        .clicked()
+                    {
                         self.save_project_dialog();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Export Atlas…").clicked() {
+                    if ui
+                        .add(egui::Button::new("Export Atlas…").shortcut_text("Ctrl+X"))
+                        .clicked()
+                    {
                         crate::atlas::export(&mut self.projects[self.active]);
                         ui.close_menu();
                     }
@@ -299,11 +509,23 @@ impl App {
                 ui.menu_button("Edit", |ui| {
                     let can_undo = self.projects[self.active].history.can_undo();
                     let can_redo = self.projects[self.active].history.can_redo();
-                    if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
+                    if ui
+                        .add_enabled(
+                            can_undo,
+                            egui::Button::new("Undo").shortcut_text("Ctrl+Z"),
+                        )
+                        .clicked()
+                    {
                         self.undo(ctx);
                         ui.close_menu();
                     }
-                    if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
+                    if ui
+                        .add_enabled(
+                            can_redo,
+                            egui::Button::new("Redo").shortcut_text("Ctrl+Y"),
+                        )
+                        .clicked()
+                    {
                         self.redo(ctx);
                         ui.close_menu();
                     }
@@ -318,6 +540,11 @@ impl App {
                         let m = &mut self.projects[self.active].cursor_margin;
                         ui.add(egui::Slider::new(m, 1.0..=50.0).text("Handle margin (px)"));
                         ui.weak("Corner grab radius, edge dead-zone, and move inset.");
+                    });
+                    ui.menu_button("Preview Quality", |ui| {
+                        let q = &mut self.projects[self.active].preview_quality;
+                        ui.add(egui::Slider::new(q, 0.1..=1.0).text("Preview scale"));
+                        ui.weak("Lower = faster live previews (more downscaling); higher = sharper but heavier.");
                     });
                 });
 
@@ -349,17 +576,30 @@ impl App {
     /// project's dock. A checkmark shows which panels are currently open.
     fn window_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Window", |ui| {
-            for (tab, name) in [
-                (PanelTab::Texture, "Texture View"),
-                (PanelTab::Atlas, "Atlas View"),
-                (PanelTab::ImageEdit, "Image Edit"),
-                (PanelTab::Rips, "Rips Gallery"),
+            // A leading check glyph marks open panels; the Alt+N shortcut is shown
+            // greyed on the right via `shortcut_text`.
+            for (tab, name, shortcut) in [
+                (PanelTab::Texture, "Texture View", "Alt+1"),
+                (PanelTab::Atlas, "Atlas View", "Alt+2"),
+                (PanelTab::Rips, "Rips Gallery", "Alt+3"),
+                (PanelTab::ImageEdit, "Image Edit", "Alt+4"),
             ] {
-                let mut open = self.active_project().dock_state.find_tab(&tab).is_some();
-                if ui.checkbox(&mut open, name).clicked() {
+                let open = self.active_project().dock_state.find_tab(&tab).is_some();
+                let label = format!("{} {name}", if open { "✔" } else { "\u{2002}\u{2002}" });
+                if ui
+                    .add(egui::Button::new(label).shortcut_text(shortcut))
+                    .clicked()
+                {
                     self.toggle_panel(tab);
                     ui.close_menu();
                 }
+            }
+            ui.separator();
+            if ui
+                .checkbox(&mut self.config.light_mode, "Light Mode")
+                .changed()
+            {
+                let _ = layouts::save_config(&self.config);
             }
         });
     }
@@ -456,15 +696,72 @@ impl App {
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {
+        // Decode the logo once, on first show.
+        if self.about_logo.is_none() {
+            if let Ok(img) = image::load_from_memory(ABOUT_LOGO_PNG) {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                self.about_logo =
+                    Some(ctx.load_texture("about_logo", color, egui::TextureOptions::LINEAR));
+            }
+        }
+
+        let logo = self.about_logo.clone();
         let mut open = self.show_about;
         egui::Window::new("About")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.heading("Rick's Texture Ripper");
-                ui.label("A texture ripper / atlas tool.");
-                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.vertical_centered(|ui| {
+                    ui.add_space(4.0);
+                    if let Some(tex) = &logo {
+                        let native = tex.size_vec2();
+                        let scale = (160.0 / native.x.max(1.0)).min(1.0);
+                        ui.image(egui::load::SizedTexture::new(tex.id(), native * scale));
+                    }
+                    ui.add_space(10.0);
+                    ui.heading("Rick's Texture Ripper");
+                    // Center the "l30z - 2026" row: a plain nested horizontal would
+                    // span the full width and left-align, so measure the row and
+                    // allocate exactly that width for `vertical_centered` to center.
+                    let (link, year, gap) = ("l30z", "- 2026", 4.0);
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let measure = |ui: &egui::Ui, s: &str| {
+                        ui.fonts(|f| {
+                            f.layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE)
+                                .size()
+                                .x
+                        })
+                    };
+                    let row_w = measure(ui, link) + gap + measure(ui, year);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(row_w, font.size + 4.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            // Custom link: always white + underlined, pointing-hand
+                            // cursor on hover (egui's default link is blue and only
+                            // underlines on hover).
+                            let text = egui::RichText::new(link)
+                                .color(egui::Color32::WHITE)
+                                .underline();
+                            let resp = ui
+                                .add(egui::Label::new(text).sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                ui.ctx().open_url(egui::OpenUrl::same_tab(
+                                    "https://github.com/L30ZMine",
+                                ));
+                            }
+                            ui.label(year);
+                        },
+                    );
+                    ui.add_space(16.0);
+                    ui.label("Version 1.2.0");
+                    ui.add_space(4.0);
+                });
             });
         self.show_about = open;
     }
@@ -484,6 +781,7 @@ impl App {
         }
 
         let logo = self.info_logo.clone();
+        let was_open = self.show_info;
         let mut open = self.show_info;
         egui::Window::new("Info")
             .open(&mut open)
@@ -496,31 +794,65 @@ impl App {
                 });
             });
         self.show_info = open;
+
+        // The user closed the Info window: remember not to auto-open it next time.
+        if was_open && !open && self.config.show_info_on_startup {
+            self.config.show_info_on_startup = false;
+            let _ = layouts::save_config(&self.config);
+        }
     }
 
     /// Permanent full-width bottom bar: build info on the left, the active
     /// project's transient status (with a dismiss `x`) on the right when set.
     fn status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(22.0)
+            .exact_height(26.0)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(6.0);
-                    ui.weak(format!(
-                        "{} v{} ({})",
-                        env!("CARGO_PKG_NAME"),
-                        env!("CARGO_PKG_VERSION"),
-                        if cfg!(debug_assertions) { "debug" } else { "release" },
-                    ));
+                    // Build info is informational only — not selectable for copy.
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "{} v{} ({})",
+                                env!("CARGO_PKG_NAME"),
+                                env!("CARGO_PKG_VERSION"),
+                                if cfg!(debug_assertions) { "debug" } else { "release" },
+                            ))
+                            .weak(),
+                        )
+                        .selectable(false),
+                    );
 
                     // Status + dismiss, pushed to the right edge.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let project = &mut self.projects[self.active];
                         if let Some(status) = project.status.clone() {
-                            if ui.small_button("x").on_hover_text("Dismiss").clicked() {
-                                project.status = None;
+                            if project.status_error {
+                                // Errors: soft dark-red rounded background covering
+                                // the whole message, and selectable so it can be
+                                // copied.
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgb(92, 34, 34))
+                                    .corner_radius(5.0)
+                                    .inner_margin(egui::Margin::symmetric(8, 1))
+                                    .show(ui, |ui| {
+                                        if ui.small_button("x").on_hover_text("Dismiss").clicked() {
+                                            project.status = None;
+                                        }
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(status).color(
+                                                egui::Color32::from_rgb(255, 205, 205),
+                                            ))
+                                            .selectable(true),
+                                        );
+                                    });
+                            } else {
+                                if ui.small_button("x").on_hover_text("Dismiss").clicked() {
+                                    project.status = None;
+                                }
+                                ui.label(status);
                             }
-                            ui.colored_label(egui::Color32::LIGHT_YELLOW, status);
                         }
                     });
                 });
@@ -622,6 +954,18 @@ fn parse_image(line: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Truncates `s` to at most `max` characters, appending `…` when it had to cut
+/// (so over-long recent-file names don't blow out the Open Recent submenu).
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
 }
 
 /// Renders a single line, turning `**bold**` spans strong. Item spacing is zeroed

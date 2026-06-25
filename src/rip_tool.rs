@@ -112,7 +112,7 @@ pub fn add_rip(project: &mut Project) {
         .or_else(|| project.images.len().checked_sub(1));
 
     let Some(idx) = target else {
-        project.status = Some("Add an image first.".to_string());
+        project.set_error("Add an image first.");
         return;
     };
 
@@ -124,13 +124,15 @@ pub fn add_rip(project: &mut Project) {
         shape,
         adjust: crate::project::Adjustments::default(),
         resize: None,
+        atlas_pos: None,
         dirty: true,
         output: None,
     });
     project.active_image = Some(idx);
     project.editor.selected = Some(project.rips.len() - 1);
     project.atlas_dirty = true;
-    project.status = Some("Drag the corners to warp; the rip updates live.".to_string());
+    project.modified = true;
+    project.set_status("Drag the corners to warp; the rip updates live.");
 }
 
 /// Bounding box of the current shape (image-local).
@@ -178,12 +180,6 @@ pub fn set_shape_circle(rip: &mut Rip) {
 // ---------------------------------------------------------------------------
 // Hit-testing & dragging
 // ---------------------------------------------------------------------------
-
-fn quad_edge_mid(c: &[Pos2; 4], i: usize) -> Pos2 {
-    let a = c[i];
-    let b = c[(i + 1) % 4];
-    Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
-}
 
 /// Returns the handle under `ptr` (screen coords) for editing this rip.
 ///
@@ -322,11 +318,10 @@ pub fn draw_rip(rip: &Rip, painter: &Painter, x: &Xform, selected: bool) {
                 painter.line_segment([s[i], s[(i + 1) % 4]], stroke);
             }
             if selected {
+                // Only the corner vertices get handle dots; edges are dragged by
+                // grabbing the edge line itself (no midpoint dot needed).
                 for p in &s {
                     handle_dot(painter, *p);
-                }
-                for i in 0..4 {
-                    handle_dot(painter, x.local_to_screen(quad_edge_mid(c, i)));
                 }
             }
         }
@@ -394,9 +389,6 @@ fn handle_dot(painter: &Painter, p: Pos2) {
 // Live recomputation
 // ---------------------------------------------------------------------------
 
-/// Output resolution scale used for the live preview while interacting.
-const PREVIEW_SCALE: f32 = 0.4;
-
 /// Recomputes the output of every dirty rip (un-warping quads, masking circles)
 /// and marks the atlas dirty if anything changed.
 ///
@@ -409,8 +401,11 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
         images,
         atlas_dirty,
         needs_full,
+        preview_quality,
         ..
     } = project;
+    // User-tunable live-preview scale (Edit > Preview Quality).
+    let preview_scale = preview_quality.clamp(0.05, 1.0);
 
     for rip in rips.iter_mut() {
         if !rip.dirty {
@@ -446,9 +441,9 @@ pub fn recompute_dirty(ctx: &egui::Context, project: &mut Project, preview: bool
                     // result is scaled back up to `target` below, so the atlas
                     // footprint is unchanged while the per-pixel cost drops and
                     // the source read stays cache-friendly / anti-aliased.
-                    let (ms, msrc) = img.preview_source(PREVIEW_SCALE);
+                    let (ms, msrc) = img.preview_source(preview_scale);
                     let scaled = (*c).map(|p| Pos2::new(p.x * ms, p.y * ms));
-                    crate::warp::unwarp_quad(msrc, scaled, PREVIEW_SCALE / ms)
+                    crate::warp::unwarp_quad(msrc, scaled, preview_scale / ms)
                 } else {
                     crate::warp::unwarp_quad(&img.pixels, *c, 1.0)
                 }

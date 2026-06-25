@@ -67,6 +67,9 @@ pub struct RipState {
     pub shape: SerShape,
     pub adjust: Adjustments,
     pub resize: Option<[u32; 2]>,
+    /// Manual atlas placement (top-left, atlas px); `None` in Automatic sort.
+    #[serde(default)]
+    pub atlas_pos: Option<[f32; 2]>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +116,7 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
                 shape: SerShape::from_shape(&r.shape),
                 adjust: r.adjust,
                 resize: r.resize,
+                atlas_pos: r.atlas_pos,
             })
             .collect(),
         atlas: project.atlas.settings,
@@ -145,7 +149,7 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             img.dirty = true;
             images.push(img);
         } else {
-            project.status = Some(format!("Could not reload {}", st.source_path.display()));
+            project.set_error(format!("Could not reload {}", st.source_path.display()));
         }
     }
     project.images = images;
@@ -159,6 +163,7 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             shape: rs.shape.to_shape(),
             adjust: rs.adjust,
             resize: rs.resize,
+            atlas_pos: rs.atlas_pos,
             dirty: true,
             output: None,
         })

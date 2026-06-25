@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use egui::{TextureHandle, Vec2};
+use egui::{Pos2, TextureHandle, Vec2};
 use egui_dock::DockState;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
@@ -108,10 +108,49 @@ pub struct Rip {
     pub adjust: Adjustments,
     /// Optional output size override `[w, h]`; `None` keeps the natural size.
     pub resize: Option<[u32; 2]>,
+    /// Manual placement (top-left, in atlas pixels) used when the atlas is in
+    /// [`SortMode::Manual`]. `None` until the rip is positioned (the packer then
+    /// seeds a fallback spot). Ignored in `Automatic` — the packer decides — so
+    /// switching back and forth never loses the user's manual layout.
+    pub atlas_pos: Option<[f32; 2]>,
     /// Set when geometry changed and the output needs recomputing.
     pub dirty: bool,
     /// Cached flattened output (texture + pixels), recomputed live.
     pub output: Option<RipOutput>,
+}
+
+/// How the export Width/Height relate to each other in the Atlas View.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AspectMode {
+    /// Aspect locked to the packed atlas; editing one dimension updates the other.
+    Automatic,
+    /// Width and height stay equal (1:1); editing either updates both.
+    Square,
+    /// Free aspect; width and height are edited independently.
+    Custom,
+}
+
+impl Default for AspectMode {
+    fn default() -> Self {
+        AspectMode::Automatic
+    }
+}
+
+/// How rips are arranged inside the atlas (independent of [`AspectMode`]).
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortMode {
+    /// The bin-packer arranges every rip automatically (the classic behaviour).
+    /// This never touches the user's aspect-ratio choice or per-rip stretching.
+    Automatic,
+    /// The user positions each rip by dragging it in the Atlas preview; positions
+    /// persist in [`Rip::atlas_pos`].
+    Manual,
+}
+
+impl Default for SortMode {
+    fn default() -> Self {
+        SortMode::Automatic
+    }
 }
 
 /// Atlas packing settings (exposed in the Atlas View).
@@ -119,10 +158,27 @@ pub struct Rip {
 pub struct AtlasSettings {
     /// Padding between rips, in pixels.
     pub padding: u32,
-    /// Export resolution `[w, h]`. Aspect-locked to the packed atlas: editing one
-    /// dimension updates the other. `0` means "follow the natural packed size".
+    /// Export resolution `[w, h]`. In `Automatic`/`Square` modes the two are kept
+    /// in lock-step; `0` means "follow the natural packed size".
     pub export_w: u32,
     pub export_h: u32,
+    /// How Width/Height relate when edited (see [`AspectMode`]).
+    #[serde(default)]
+    pub aspect_mode: AspectMode,
+    /// How rips are arranged inside the atlas (see [`SortMode`]).
+    #[serde(default)]
+    pub sort_mode: SortMode,
+    /// In [`SortMode::Manual`], snap dragged rips to the grid + nearby edges.
+    #[serde(default)]
+    pub snap_enabled: bool,
+    /// Grid step (atlas px) used by the Manual snap (when no edge is closer).
+    #[serde(default = "default_snap_step")]
+    pub snap_step: u32,
+}
+
+/// Default Manual-snap grid step (atlas pixels).
+fn default_snap_step() -> u32 {
+    16
 }
 
 impl Default for AtlasSettings {
@@ -131,6 +187,10 @@ impl Default for AtlasSettings {
             padding: 0,
             export_w: 0,
             export_h: 0,
+            aspect_mode: AspectMode::Automatic,
+            sort_mode: SortMode::Automatic,
+            snap_enabled: false,
+            snap_step: default_snap_step(),
         }
     }
 }
@@ -145,19 +205,40 @@ pub struct AtlasPlacement {
 }
 
 /// The packed atlas output.
+///
+/// Holds only the per-rip placements and the natural packed size — never a
+/// composited image. The live preview draws each rip texture into its cell, and
+/// export composites on demand ([`crate::atlas::export`]), so a repack stays
+/// cheap even mid-drag.
 pub struct AtlasResult {
     pub size: [usize; 2],
-    /// Composited atlas pixels (used for export; the live preview draws each rip
-    /// texture per-cell instead of a single composited texture).
-    pub pixels: RgbaImage,
     pub placements: Vec<AtlasPlacement>,
     pub used_count: usize,
+}
+
+/// Pan/zoom state for the Atlas preview (runtime-only, not serialized). `pan` is
+/// the screen-space offset of the export-bounds *center* from the panel center.
+#[derive(Clone, Copy)]
+pub struct AtlasView {
+    pub pan: Vec2,
+    pub zoom: f32,
+}
+
+impl Default for AtlasView {
+    fn default() -> Self {
+        Self {
+            pan: Vec2::ZERO,
+            zoom: 1.0,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct Atlas {
     pub settings: AtlasSettings,
     pub result: Option<AtlasResult>,
+    /// Pan/zoom for the preview (runtime-only).
+    pub view: AtlasView,
 }
 
 /// Subdivision guide lines drawn inside the selected quad rip, to help align
@@ -192,6 +273,10 @@ pub struct ViewState {
     pub dragging_image: Option<usize>,
     /// True while a Shift-drag over empty canvas is panning the view.
     pub panning: bool,
+    /// Screen position of the canvas top-left as of the last frame. Used to keep
+    /// the view anchored when the toolbar's contextual row pops in/out (which
+    /// would otherwise shift this canvas's origin and jump the whole image).
+    pub last_origin: Option<Pos2>,
 }
 
 impl Default for ViewState {
@@ -201,12 +286,16 @@ impl Default for ViewState {
             zoom: 1.0,
             dragging_image: None,
             panning: false,
+            last_origin: None,
         }
     }
 }
 
 pub struct Project {
     pub name: String,
+    /// On-disk path this project was last saved to / opened from, if any. Drives
+    /// "Save" (overwrite) vs "Save As" (prompt). Runtime-only (not serialized).
+    pub path: Option<PathBuf>,
     /// This project's dock layout (each project can be arranged independently).
     pub dock_state: DockState<PanelTab>,
     /// Images loaded into the Texture View.
@@ -235,14 +324,21 @@ pub struct Project {
     /// Hit-test margin (screen px) for rip handles: corner grab radius, edge
     /// dead-zone around vertices, and move-region inset. Tunable in Edit menu.
     pub cursor_margin: f32,
-    /// Transient status / error message shown in the Texture View.
+    /// Live-preview output scale for the perspective warp (0,1]: lower = more
+    /// mip downscaling = faster but coarser previews. Tunable in Edit menu.
+    /// Runtime-only (not serialized).
+    pub preview_quality: f32,
+    /// Transient status / error message shown in the chin bar.
     pub status: Option<String>,
+    /// True when `status` is an error (rendered on a soft red, selectable bg).
+    pub status_error: bool,
 }
 
 impl Project {
     pub fn new(name: impl Into<String>, dock_state: DockState<PanelTab>) -> Self {
         let mut project = Self {
             name: name.into(),
+            path: None,
             dock_state,
             images: Vec::new(),
             active_image: None,
@@ -254,12 +350,28 @@ impl Project {
             atlas_dirty: false,
             needs_full: false,
             history: History::default(),
-            modified: true,
+            // A brand-new, empty project is "clean": the tab shows no `*` until
+            // the user actually changes something (e.g. adds an image).
+            modified: false,
             cursor_margin: 15.0,
+            preview_quality: 0.4,
             status: None,
+            status_error: false,
         };
         project.reset_history();
         project
+    }
+
+    /// Sets an informational status message (shown in the chin bar).
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = Some(msg.into());
+        self.status_error = false;
+    }
+
+    /// Sets an error status message (shown on a soft red, selectable background).
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.status = Some(msg.into());
+        self.status_error = true;
     }
 
     /// A unique-ish default name for a new rip.

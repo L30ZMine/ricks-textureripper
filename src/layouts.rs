@@ -105,12 +105,42 @@ pub fn delete_layout(name: &str) -> Result<(), String> {
 pub struct Config {
     /// Layout new projects start from.
     pub default_layout: String,
+    /// Whether to open the Info window on startup. Cleared once the user closes
+    /// the Info window, so it doesn't reappear on the next launch.
+    #[serde(default = "default_true")]
+    pub show_info_on_startup: bool,
+    /// Whether the UI uses the light theme (toggled in the Window menu).
+    #[serde(default)]
+    pub light_mode: bool,
+    /// Recently opened/saved project files, newest first (File > Open Recent).
+    #[serde(default)]
+    pub recent_files: Vec<PathBuf>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// How many entries the recent-files list keeps.
+const MAX_RECENT: usize = 10;
+
+impl Config {
+    /// Records `path` as the most-recently-used project: moves it to the front,
+    /// de-duplicated, and caps the list at `MAX_RECENT`.
+    pub fn push_recent(&mut self, path: &std::path::Path) {
+        self.recent_files.retain(|p| p != path);
+        self.recent_files.insert(0, path.to_path_buf());
+        self.recent_files.truncate(MAX_RECENT);
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             default_layout: DEFAULT_LAYOUT.to_string(),
+            show_info_on_startup: true,
+            light_mode: false,
+            recent_files: Vec::new(),
         }
     }
 }

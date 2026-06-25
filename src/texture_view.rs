@@ -25,8 +25,53 @@ pub fn open_add_image_dialog(ctx: &egui::Context, project: &mut Project) {
 
     for path in paths {
         match load_image(ctx, project, &path) {
-            Ok(name) => project.status = Some(format!("Loaded {name}")),
-            Err(e) => project.status = Some(format!("Failed to load {}: {e}", path.display())),
+            Ok(name) => project.set_status(format!("Loaded {name}")),
+            Err(e) => project.set_error(format!("Failed to load {}: {e}", path.display())),
+        }
+    }
+}
+
+/// Paints a Photoshop-style transparency checkerboard over the part of `rect`
+/// inside `clip`. Uses two dark greys in dark mode and two light greys in light
+/// mode; the pattern is screen-fixed (it doesn't scroll with pan/zoom), like
+/// Photoshop's. The phase is anchored to `phase` (the screen position the cell
+/// grid lines up with): anchoring to a *stable* `phase` keeps the pattern from
+/// jumping when `rect`'s top-left moves — e.g. the Texture View canvas shifting
+/// as the contextual toolbar row pops in/out. Iteration is bounded to the visible
+/// cells, so a huge `rect` (e.g. a zoomed-in atlas canvas larger than the panel)
+/// doesn't cost a cell per off-screen square.
+pub fn paint_checkerboard_clipped(
+    painter: &egui::Painter,
+    rect: Rect,
+    clip: Rect,
+    phase: Pos2,
+    dark: bool,
+) {
+    let vis = rect.intersect(clip);
+    if vis.width() <= 0.0 || vis.height() <= 0.0 {
+        return;
+    }
+    let (a, b) = if dark {
+        (Color32::from_gray(38), Color32::from_gray(52))
+    } else {
+        (Color32::from_gray(190), Color32::from_gray(225))
+    };
+    painter.rect_filled(vis, 0.0, a);
+    let cell = 16.0;
+    let i0 = ((vis.min.x - phase.x) / cell).floor() as i32;
+    let i1 = ((vis.max.x - phase.x) / cell).ceil() as i32;
+    let j0 = ((vis.min.y - phase.y) / cell).floor() as i32;
+    let j1 = ((vis.max.y - phase.y) / cell).ceil() as i32;
+    for j in j0..j1 {
+        for i in i0..i1 {
+            if (i + j).rem_euclid(2) == 0 {
+                continue;
+            }
+            let min = phase + Vec2::new(i as f32 * cell, j as f32 * cell);
+            let r = Rect::from_min_size(min, Vec2::splat(cell)).intersect(vis);
+            if r.width() > 0.0 && r.height() > 0.0 {
+                painter.rect_filled(r, 0.0, b);
+            }
         }
     }
 }
@@ -42,31 +87,43 @@ pub fn upload_texture(
     ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
 }
 
+/// Builds a `LoadedImage` from already-decoded original RGBA pixels (at the
+/// origin, no adjustments). Shared by disk loading and the self-contained project
+/// open path, which decodes the pixels embedded in the `.rtrpf` file.
+pub fn loaded_image_from_pixels(
+    ctx: &egui::Context,
+    name: String,
+    source_path: std::path::PathBuf,
+    original: image::RgbaImage,
+) -> LoadedImage {
+    let size = [original.width() as usize, original.height() as usize];
+    let texture = upload_texture(ctx, &name, &original);
+    let mips = crate::image_edit::build_mips(&original);
+    LoadedImage {
+        name,
+        size,
+        texture,
+        mips,
+        original: original.clone(),
+        adjust: crate::project::Adjustments::default(),
+        dirty: false,
+        pixels: original,
+        pos: Vec2::ZERO,
+        source_path,
+    }
+}
+
 /// Decodes an image file into a `LoadedImage` (at the origin, no adjustments).
 pub fn load_loaded_image(ctx: &egui::Context, path: &Path) -> Result<LoadedImage, String> {
     let dynimg = image::open(path).map_err(|e| e.to_string())?;
     let rgba = dynimg.to_rgba8();
-    let size = [rgba.width() as usize, rgba.height() as usize];
 
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "image".to_string());
 
-    let texture = upload_texture(ctx, &name, &rgba);
-    let mips = crate::image_edit::build_mips(&rgba);
-    Ok(LoadedImage {
-        name,
-        size,
-        texture,
-        mips,
-        original: rgba.clone(),
-        adjust: crate::project::Adjustments::default(),
-        dirty: false,
-        pixels: rgba,
-        pos: Vec2::ZERO,
-        source_path: path.to_path_buf(),
-    })
+    Ok(loaded_image_from_pixels(ctx, name, path.to_path_buf(), rgba))
 }
 
 /// Decodes an image file and appends it to the project.
@@ -78,8 +135,63 @@ fn load_image(ctx: &egui::Context, project: &mut Project, path: &Path) -> Result
     let idx = project.images.len();
     project.images.push(img);
     project.active_image = Some(idx);
+    // The first content added to a fresh project marks it as having unsaved work
+    // (so the tab shows a `*`).
+    project.modified = true;
 
     Ok(name)
+}
+
+/// Removes the image at `idx`, dropping its rips and re-indexing the rest so
+/// remaining rips keep pointing at the right images.
+pub fn remove_image(project: &mut Project, idx: usize) {
+    if idx >= project.images.len() {
+        return;
+    }
+    project.images.remove(idx);
+
+    // Drop rips on the removed image; shift down rips that referenced a later one.
+    let mut keep = Vec::with_capacity(project.rips.len());
+    for mut rip in project.rips.drain(..) {
+        if rip.image == idx {
+            continue;
+        }
+        if rip.image > idx {
+            rip.image -= 1;
+        }
+        keep.push(rip);
+    }
+    project.rips = keep;
+
+    // Fix up the active image and rip selection.
+    project.active_image = match project.active_image {
+        Some(a) if a == idx => None,
+        Some(a) if a > idx => Some(a - 1),
+        other => other,
+    };
+    if project.active_image.is_none() && !project.images.is_empty() {
+        project.active_image = Some(project.images.len() - 1);
+    }
+    project.editor.selected = project
+        .editor
+        .selected
+        .filter(|&s| s < project.rips.len());
+
+    project.atlas_dirty = true;
+    project.modified = true;
+    project.set_status("Image removed.");
+}
+
+/// Removes the rip at `idx`, clearing the selection and repacking the atlas.
+pub fn remove_rip(project: &mut Project, idx: usize) {
+    if idx >= project.rips.len() {
+        return;
+    }
+    project.rips.remove(idx);
+    project.editor.selected = None;
+    project.atlas_dirty = true;
+    project.modified = true;
+    project.set_status("Rip removed.");
 }
 
 /// Draws the whole Texture View panel (toolbar + canvas).
@@ -93,12 +205,30 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
 }
 
 fn toolbar(ui: &mut egui::Ui, project: &mut Project) {
+    let mut remove_active_image: Option<usize> = None;
+    let mut delete: Option<usize> = None;
     ui.horizontal(|ui| {
         if ui.button("Add Image").clicked() {
             open_add_image_dialog(ui.ctx(), project);
         }
         if ui.button("Add Rip").clicked() {
             rip_tool::add_rip(project);
+        }
+        // Remove the active image (replaces the old Deselect button).
+        let active = project.active_image.filter(|&i| i < project.images.len());
+        if ui
+            .add_enabled(active.is_some(), egui::Button::new("Remove Image"))
+            .clicked()
+        {
+            remove_active_image = active;
+        }
+        // Remove the selected rip (sits next to Remove Image).
+        let sel_rip = project.editor.selected.filter(|&s| s < project.rips.len());
+        if ui
+            .add_enabled(sel_rip.is_some(), egui::Button::new("Remove Rip"))
+            .clicked()
+        {
+            delete = sel_rip;
         }
         ui.separator();
         ui.label(format!("{} image(s)", project.images.len()));
@@ -110,9 +240,11 @@ fn toolbar(ui: &mut egui::Ui, project: &mut Project) {
         }
         ui.label(format!("{:.0}%", project.view.zoom * 100.0));
     });
+    if let Some(idx) = remove_active_image {
+        remove_image(project, idx);
+    }
 
-    // Controls for the selected rip.
-    let mut delete: Option<usize> = None;
+    // Shape controls for the selected rip (the remove button moved to the top row).
     if let Some(sel) = project.editor.selected {
         if sel < project.rips.len() {
             ui.horizontal(|ui| {
@@ -125,30 +257,24 @@ fn toolbar(ui: &mut egui::Ui, project: &mut Project) {
                 if ui.selectable_label(!is_quad, "Circle").clicked() {
                     rip_tool::set_shape_circle(rip);
                 }
-                ui.separator();
-                if ui.button("Delete rip").clicked() {
-                    delete = Some(sel);
-                }
-                if ui.button("Deselect").clicked() {
-                    project.editor.selected = None;
-                }
             });
         }
     }
 
     if let Some(i) = delete {
-        project.rips.remove(i);
-        project.editor.selected = None;
-        project.atlas_dirty = true;
-        project.status = Some("Rip deleted.".to_string());
+        remove_rip(project, i);
     }
 }
 
 /// The pannable / zoomable image canvas with live rip editing.
 fn canvas(ui: &mut egui::Ui, project: &mut Project) {
+    let dark = ui.visuals().dark_mode;
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_gray(28));
+    // Anchor the checkerboard phase to a window-fixed origin (0,0) rather than the
+    // canvas top-left, so the pattern stays put when the contextual "Shape" row
+    // pops in/out and shifts this canvas down/up.
+    paint_checkerboard_clipped(&painter, rect, rect, Pos2::ZERO, dark);
 
     let margin = project.cursor_margin;
     let Project {
@@ -160,6 +286,18 @@ fn canvas(ui: &mut egui::Ui, project: &mut Project) {
         guides,
         ..
     } = project;
+
+    // Anchor the view independently of the toolbar. The contextual "Shape" row
+    // pops in/out when a rip is (de)selected, which changes this canvas's top —
+    // and since the image is drawn at `rect.min + pan`, that would otherwise jump
+    // the whole workspace. Compensate `pan` by the origin delta so it stays put.
+    if let Some(prev) = view.last_origin {
+        let shift = rect.min - prev;
+        if shift != Vec2::ZERO {
+            view.pan -= shift;
+        }
+    }
+    view.last_origin = Some(rect.min);
 
     // Guide-toggle icon in the top-right corner of the canvas.
     let guide_btn_rect = Rect::from_min_size(

@@ -1,62 +1,61 @@
 //! The dockable panel system, built on `egui_dock`.
 //!
-//! The three panels (Atlas View, Texture View, Image Edit) are the "tabs" of the
-//! dock. They can be dragged, snapped, split and re-docked Blender-style. Their
+//! The four panels (Atlas View, Texture View, Image Edit, Rips Gallery) are the
+//! "tabs" of the dock. They can be dragged, snapped, split and re-docked
+//! Blender-style, but are *not* allowed to detach into floating windows. Their
 //! *content* is drawn against whichever `Project` is currently active, which is
 //! how switching the top-level project tabs swaps the whole workspace.
 
 use crate::project::Project;
-use egui::{load::SizedTexture, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2};
 use egui_dock::TabViewer;
 
-/// A simple wrapped gallery of extracted rips with per-item remove buttons.
-/// Replaced/augmented by the packed atlas view in Phase 4.
+/// Fixed cell width (px) of one rip gallery item, used to size the responsive
+/// column count and to keep every item the same footprint.
+const ITEM_WIDTH: f32 = 110.0;
+/// Fixed thumbnail box size (px); images are fit inside, centered.
+const THUMB: f32 = 92.0;
+
+/// A responsive, uniform-height gallery of extracted rips with per-item remove
+/// buttons. Column count shrinks with the available width (down to one per row),
+/// and every item has the same height regardless of its thumbnail's aspect.
 fn rip_gallery(ui: &mut egui::Ui, project: &mut Project) {
     if project.rips.is_empty() {
         ui.weak("No rips yet. Use \"Add Rip\" in the Texture View.");
         return;
     }
 
-    let mut remove: Option<usize> = None;
+    let avail = ui.available_width().max(ITEM_WIDTH);
+    let cols = ((avail / ITEM_WIDTH).floor() as usize).max(1);
+
     let selected = project.editor.selected;
     let mut select: Option<usize> = None;
-    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for (i, rip) in project.rips.iter().enumerate() {
-                ui.group(|ui| {
-                    ui.vertical(|ui| {
-                        match &rip.output {
-                            Some(out) => {
-                                let (w, h) = (out.size[0] as f32, out.size[1] as f32);
-                                let scale = (96.0 / w).min(96.0 / h).min(1.0);
-                                let size = Vec2::new(w * scale, h * scale);
-                                // Clicking the thumbnail selects the rip too.
-                                let img = egui::Image::new(SizedTexture::new(out.texture.id(), size))
-                                    .sense(egui::Sense::click());
-                                if ui.add(img).clicked() {
-                                    select = Some(i);
-                                }
-                            }
-                            None => {
-                                ui.add_sized([96.0, 96.0], egui::Label::new("(empty)"));
-                            }
+    let mut remove: Option<usize> = None;
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            let n = project.rips.len();
+            let mut i = 0;
+            while i < n {
+                ui.horizontal(|ui| {
+                    for _ in 0..cols {
+                        if i >= n {
+                            break;
                         }
-                        let label = if selected == Some(i) {
-                            egui::RichText::new(&rip.name).strong()
-                        } else {
-                            egui::RichText::new(&rip.name)
-                        };
-                        if ui.selectable_label(selected == Some(i), label).clicked() {
-                            select = Some(i);
-                        }
-                        if ui.small_button("remove").clicked() {
-                            remove = Some(i);
-                        }
-                    });
+                        rip_item(
+                            ui,
+                            &project.rips[i],
+                            i,
+                            selected == Some(i),
+                            &mut select,
+                            &mut remove,
+                        );
+                        i += 1;
+                    }
                 });
             }
         });
-    });
 
     if let Some(i) = select {
         project.editor.selected = Some(i);
@@ -65,7 +64,69 @@ fn rip_gallery(ui: &mut egui::Ui, project: &mut Project) {
         project.rips.remove(i);
         project.editor.selected = None;
         project.atlas_dirty = true;
+        project.modified = true;
     }
+}
+
+/// Draws one fixed-size gallery item: a thumbnail box, the rip name, and a
+/// remove button. Clicking the thumbnail or name selects the rip.
+fn rip_item(
+    ui: &mut egui::Ui,
+    rip: &crate::project::Rip,
+    idx: usize,
+    is_sel: bool,
+    select: &mut Option<usize>,
+    remove: &mut Option<usize>,
+) {
+    ui.group(|ui| {
+        ui.set_width(ITEM_WIDTH);
+        ui.vertical_centered(|ui| {
+            // Fixed thumbnail box keeps every item the same height.
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(THUMB), Sense::click());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+            match &rip.output {
+                Some(out) => {
+                    let (w, h) = (out.size[0] as f32, out.size[1] as f32);
+                    let s = (THUMB / w.max(1.0)).min(THUMB / h.max(1.0)).min(1.0);
+                    let isz = Vec2::new(w * s, h * s);
+                    let img_rect = Rect::from_center_size(rect.center(), isz);
+                    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                    painter.image(out.texture.id(), img_rect, uv, Color32::WHITE);
+                }
+                None => {
+                    painter.text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        "(empty)",
+                        FontId::proportional(12.0),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+            }
+            if resp.clicked() {
+                *select = Some(idx);
+            }
+
+            let label = if is_sel {
+                RichText::new(&rip.name).strong()
+            } else {
+                RichText::new(&rip.name)
+            };
+            if ui
+                .add_sized(
+                    [ITEM_WIDTH - 12.0, 18.0],
+                    egui::SelectableLabel::new(is_sel, label),
+                )
+                .clicked()
+            {
+                *select = Some(idx);
+            }
+            if ui.small_button("remove").clicked() {
+                *remove = Some(idx);
+            }
+        });
+    });
 }
 
 /// One dockable panel.
@@ -101,6 +162,12 @@ impl<'a> TabViewer for DockViewer<'a> {
         false
     }
 
+    /// Never let a tab be dragged out into a floating window — detaching is not
+    /// supported here (it previously crashed); panels stay docked.
+    fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {
+        false
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             PanelTab::Atlas => {
@@ -113,8 +180,7 @@ impl<'a> TabViewer for DockViewer<'a> {
                 crate::image_edit::ui(ui, self.project);
             }
             PanelTab::Rips => {
-                ui.heading("Rips Gallery");
-                ui.separator();
+                // No title / separator — the dock tab already names the panel.
                 rip_gallery(ui, self.project);
             }
         }
