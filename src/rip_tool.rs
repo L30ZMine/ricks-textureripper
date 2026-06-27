@@ -14,7 +14,25 @@ use crate::project::{LoadedImage, Project, Rip, RipOutput};
 pub enum RipShape {
     /// Four free corners in order TL, TR, BR, BL (perspective quad).
     Quad([Pos2; 4]),
+    /// Four corners (TL, TR, BR, BL) whose sides are cubic beziers. Each corner
+    /// carries two handle **offsets**: `out_handles[i]` leaves corner `i` toward
+    /// `i+1` (loop order), `in_handles[i]` enters corner `i` from `i-1`. Storing
+    /// offsets means handles ride along when a corner or the whole rip is moved.
+    CurvedQuad {
+        corners: [Pos2; 4],
+        out_handles: [Vec2; 4],
+        in_handles: [Vec2; 4],
+    },
     Circle { center: Pos2, radius: f32 },
+}
+
+/// Which side of a corner a bezier control handle belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleSide {
+    /// Leaves the corner toward the next corner (loop order).
+    Out,
+    /// Enters the corner from the previous corner.
+    In,
 }
 
 /// Which handle of the selected rip is being dragged.
@@ -24,6 +42,9 @@ pub enum DragHandle {
     QuadCorner(usize),
     QuadEdge(usize),
     QuadMove,
+    CurvedCorner(usize),
+    CurvedHandle(usize, HandleSide),
+    CurvedMove,
     CircleCenter,
     CircleRadius,
     CircleMove,
@@ -141,7 +162,7 @@ pub fn add_rip(project: &mut Project) {
 /// Bounding box of the current shape (image-local).
 fn shape_bounds(shape: &RipShape) -> Rect {
     match shape {
-        RipShape::Quad(c) => {
+        RipShape::Quad(c) | RipShape::CurvedQuad { corners: c, .. } => {
             let mut r = Rect::from_two_pos(c[0], c[1]);
             r = r.union(Rect::from_two_pos(c[2], c[3]));
             r
@@ -152,10 +173,52 @@ fn shape_bounds(shape: &RipShape) -> Rect {
     }
 }
 
-/// Converts a rip to a quad (axis-aligned from its current bounds).
+/// Handle offsets that place each corner's controls at the 1/3 points of its
+/// straight edges — so a freshly-curved quad starts out visually identical to a
+/// plain quad (a cubic with 1/3-point handles *is* the straight segment).
+fn straight_handles(c: &[Pos2; 4]) -> ([Vec2; 4], [Vec2; 4]) {
+    let mut out_h = [Vec2::ZERO; 4];
+    let mut in_h = [Vec2::ZERO; 4];
+    for i in 0..4 {
+        let next = (i + 1) % 4;
+        let prev = (i + 3) % 4;
+        out_h[i] = (c[next] - c[i]) / 3.0;
+        in_h[i] = (c[prev] - c[i]) / 3.0;
+    }
+    (out_h, in_h)
+}
+
+/// Samples the four bezier sides into a closed polyline (image-local), used for
+/// drawing, edge hit-testing and point-in-shape selection.
+fn curved_polygon(corners: &[Pos2; 4], out_h: &[Vec2; 4], in_h: &[Vec2; 4]) -> Vec<Pos2> {
+    const PER_EDGE: usize = 16;
+    let mut pts = Vec::with_capacity(PER_EDGE * 4);
+    for e in 0..4 {
+        let a = e;
+        let b = (e + 1) % 4;
+        let p0 = corners[a];
+        let p1 = corners[a] + out_h[a];
+        let p2 = corners[b] + in_h[b];
+        let p3 = corners[b];
+        for i in 0..PER_EDGE {
+            let u = i as f32 / PER_EDGE as f32;
+            pts.push(crate::warp::bezier_point(p0, p1, p2, p3, u));
+        }
+    }
+    pts
+}
+
+/// Converts a rip to a quad. A curved quad keeps its corners (just drops the
+/// curvature); any other shape becomes an axis-aligned quad from its bounds.
 pub fn set_shape_quad(rip: &mut Rip) {
-    if matches!(rip.shape, RipShape::Quad(_)) {
-        return;
+    match &rip.shape {
+        RipShape::Quad(_) => return,
+        RipShape::CurvedQuad { corners, .. } => {
+            rip.shape = RipShape::Quad(*corners);
+            rip.dirty = true;
+            return;
+        }
+        _ => {}
     }
     let b = shape_bounds(&rip.shape);
     rip.shape = RipShape::Quad([
@@ -164,6 +227,32 @@ pub fn set_shape_quad(rip: &mut Rip) {
         b.right_bottom(),
         b.left_bottom(),
     ]);
+    rip.dirty = true;
+}
+
+/// Converts a rip to a **curved** quad. From a plain quad it keeps the corners
+/// and seeds straight (1/3-point) handles, so toggling on is visually a no-op
+/// until a handle is dragged; any other shape uses its bounds as the corners.
+pub fn set_shape_curved_quad(rip: &mut Rip) {
+    let corners = match &rip.shape {
+        RipShape::CurvedQuad { .. } => return,
+        RipShape::Quad(c) => *c,
+        other => {
+            let b = shape_bounds(other);
+            [
+                b.left_top(),
+                b.right_top(),
+                b.right_bottom(),
+                b.left_bottom(),
+            ]
+        }
+    };
+    let (out_handles, in_handles) = straight_handles(&corners);
+    rip.shape = RipShape::CurvedQuad {
+        corners,
+        out_handles,
+        in_handles,
+    };
     rip.dirty = true;
 }
 
@@ -222,6 +311,33 @@ pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHa
             }
             None
         }
+        RipShape::CurvedQuad {
+            corners,
+            out_handles,
+            in_handles,
+        } => {
+            // Corners first (so they win over a handle dot resting on top).
+            for (i, corner) in corners.iter().enumerate() {
+                if x.local_to_screen(*corner).distance(ptr) <= margin {
+                    return Some(DragHandle::CurvedCorner(i));
+                }
+            }
+            // Then the eight bezier control-handle dots.
+            for i in 0..4 {
+                if x.local_to_screen(corners[i] + out_handles[i]).distance(ptr) <= margin {
+                    return Some(DragHandle::CurvedHandle(i, HandleSide::Out));
+                }
+                if x.local_to_screen(corners[i] + in_handles[i]).distance(ptr) <= margin {
+                    return Some(DragHandle::CurvedHandle(i, HandleSide::In));
+                }
+            }
+            // Otherwise, anywhere inside the curved outline moves the whole rip.
+            let poly = curved_polygon(corners, out_handles, in_handles);
+            if point_in_polygon(&poly, x, ptr) {
+                return Some(DragHandle::CurvedMove);
+            }
+            None
+        }
         RipShape::Circle { center, radius } => {
             let radius_handle = *center + Vec2::new(*radius, 0.0);
             if x.local_to_screen(radius_handle).distance(ptr) <= margin {
@@ -244,23 +360,30 @@ pub fn hit_handle(rip: &Rip, x: &Xform, ptr: Pos2, margin: f32) -> Option<DragHa
 pub fn contains_point(rip: &Rip, x: &Xform, ptr: Pos2) -> bool {
     match &rip.shape {
         RipShape::Quad(c) => point_in_quad(c, x, ptr),
+        RipShape::CurvedQuad {
+            corners,
+            out_handles,
+            in_handles,
+        } => point_in_polygon(&curved_polygon(corners, out_handles, in_handles), x, ptr),
         RipShape::Circle { center, radius } => x.screen_to_local(ptr).distance(*center) <= *radius,
     }
 }
 
 fn point_in_quad(c: &[Pos2; 4], x: &Xform, ptr: Pos2) -> bool {
-    // Even-odd ray cast in screen space.
-    let pts: [Pos2; 4] = [
-        x.local_to_screen(c[0]),
-        x.local_to_screen(c[1]),
-        x.local_to_screen(c[2]),
-        x.local_to_screen(c[3]),
-    ];
+    point_in_polygon(c, x, ptr)
+}
+
+/// Even-odd point-in-polygon test in screen space (`poly` is image-local).
+fn point_in_polygon(poly: &[Pos2], x: &Xform, ptr: Pos2) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
     let mut inside = false;
-    let mut j = 3;
-    for i in 0..4 {
-        let pi = pts[i];
-        let pj = pts[j];
+    let mut j = n - 1;
+    for i in 0..n {
+        let pi = x.local_to_screen(poly[i]);
+        let pj = x.local_to_screen(poly[j]);
         if ((pi.y > ptr.y) != (pj.y > ptr.y))
             && (ptr.x < (pj.x - pi.x) * (ptr.y - pi.y) / (pj.y - pi.y) + pi.x)
         {
@@ -272,7 +395,11 @@ fn point_in_quad(c: &[Pos2; 4], x: &Xform, ptr: Pos2) -> bool {
 }
 
 /// Applies a drag of the given handle to the rip and marks it dirty.
-pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec2) {
+///
+/// `alt` breaks a curved corner's smooth link (dragging one bezier handle
+/// normally mirrors its partner for a smooth curve; with `alt` the two sides move
+/// independently, allowing a sharp corner). It is ignored for non-curved handles.
+pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec2, alt: bool) {
     let local = x.screen_to_local(ptr);
     let local_delta = delta / x.zoom;
 
@@ -286,6 +413,39 @@ pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec
         }
         (RipShape::Quad(c), DragHandle::QuadMove) => {
             for corner in c.iter_mut() {
+                *corner += local_delta;
+            }
+        }
+        (RipShape::CurvedQuad { corners, .. }, DragHandle::CurvedCorner(i)) => {
+            // Handles are offsets, so they follow the corner automatically.
+            corners[i] = local;
+        }
+        (
+            RipShape::CurvedQuad {
+                corners,
+                out_handles,
+                in_handles,
+            },
+            DragHandle::CurvedHandle(i, side),
+        ) => {
+            let off = local - corners[i];
+            match side {
+                HandleSide::Out => {
+                    out_handles[i] = off;
+                    if !alt {
+                        in_handles[i] = -off; // mirror -> smooth corner
+                    }
+                }
+                HandleSide::In => {
+                    in_handles[i] = off;
+                    if !alt {
+                        out_handles[i] = -off;
+                    }
+                }
+            }
+        }
+        (RipShape::CurvedQuad { corners, .. }, DragHandle::CurvedMove) => {
+            for corner in corners.iter_mut() {
                 *corner += local_delta;
             }
         }
@@ -330,6 +490,32 @@ pub fn draw_rip(rip: &Rip, painter: &Painter, x: &Xform, selected: bool) {
                 }
             }
         }
+        RipShape::CurvedQuad {
+            corners,
+            out_handles,
+            in_handles,
+        } => {
+            let poly = curved_polygon(corners, out_handles, in_handles);
+            let pts: Vec<Pos2> = poly.iter().map(|p| x.local_to_screen(*p)).collect();
+            for i in 0..pts.len() {
+                painter.line_segment([pts[i], pts[(i + 1) % pts.len()]], stroke);
+            }
+            if selected {
+                let hline = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 180, 0, 150));
+                for i in 0..4 {
+                    let c = x.local_to_screen(corners[i]);
+                    let out = x.local_to_screen(corners[i] + out_handles[i]);
+                    let inp = x.local_to_screen(corners[i] + in_handles[i]);
+                    painter.line_segment([c, out], hline);
+                    painter.line_segment([c, inp], hline);
+                    handle_circle(painter, out);
+                    handle_circle(painter, inp);
+                }
+                for i in 0..4 {
+                    handle_dot(painter, x.local_to_screen(corners[i]));
+                }
+            }
+        }
         RipShape::Circle { center, radius } => {
             let cs = x.local_to_screen(*center);
             painter.circle_stroke(cs, radius * x.zoom, stroke);
@@ -362,6 +548,66 @@ pub fn draw_guides(c: &[Pos2; 4], painter: &Painter, x: &Xform, vertical: u32, h
     }
 }
 
+/// A point inside a curved quad via a Coons patch over its four bezier sides
+/// (normalised coords `s`,`t` in `[0,1]`). Used only for drawing guide lines, so
+/// a Coons approximation of the perspective interior is plenty.
+fn coons(corners: &[Pos2; 4], out_h: &[Vec2; 4], in_h: &[Vec2; 4], s: f32, t: f32) -> Pos2 {
+    let edge = |e: usize, u: f32| -> Pos2 {
+        let a = e;
+        let b = (e + 1) % 4;
+        crate::warp::bezier_point(corners[a], corners[a] + out_h[a], corners[b] + in_h[b], corners[b], u)
+    };
+    let ctop = edge(0, s).to_vec2(); // c0 -> c1
+    let cright = edge(1, t).to_vec2(); // c1 -> c2
+    let cbottom = edge(2, 1.0 - s).to_vec2(); // c3 -> c2
+    let cleft = edge(3, 1.0 - t).to_vec2(); // c0 -> c3
+    let lc = cleft * (1.0 - s) + cright * s;
+    let ld = ctop * (1.0 - t) + cbottom * t;
+    let bilinear = corners[0].to_vec2() * ((1.0 - s) * (1.0 - t))
+        + corners[1].to_vec2() * (s * (1.0 - t))
+        + corners[3].to_vec2() * ((1.0 - s) * t)
+        + corners[2].to_vec2() * (s * t);
+    (lc + ld - bilinear).to_pos2()
+}
+
+/// Interior subdivision lines for a curved quad (the bezier-side counterpart of
+/// [`draw_guides`]); each line is polylined along the Coons surface so it follows
+/// the bend.
+pub fn draw_guides_curved(
+    corners: &[Pos2; 4],
+    out_h: &[Vec2; 4],
+    in_h: &[Vec2; 4],
+    painter: &Painter,
+    x: &Xform,
+    vertical: u32,
+    horizontal: u32,
+) {
+    const STEPS: u32 = 24;
+    let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 180, 0, 110));
+    // Vertical lines: constant s, swept over t.
+    for i in 1..=vertical {
+        let s = i as f32 / (vertical + 1) as f32;
+        let mut prev = x.local_to_screen(coons(corners, out_h, in_h, s, 0.0));
+        for k in 1..=STEPS {
+            let t = k as f32 / STEPS as f32;
+            let p = x.local_to_screen(coons(corners, out_h, in_h, s, t));
+            painter.line_segment([prev, p], stroke);
+            prev = p;
+        }
+    }
+    // Horizontal lines: constant t, swept over s.
+    for i in 1..=horizontal {
+        let t = i as f32 / (horizontal + 1) as f32;
+        let mut prev = x.local_to_screen(coons(corners, out_h, in_h, 0.0, t));
+        for k in 1..=STEPS {
+            let s = k as f32 / STEPS as f32;
+            let p = x.local_to_screen(coons(corners, out_h, in_h, s, t));
+            painter.line_segment([prev, p], stroke);
+            prev = p;
+        }
+    }
+}
+
 /// The cursor to show while hovering or dragging a given handle.
 pub fn handle_cursor(handle: DragHandle) -> egui::CursorIcon {
     use egui::CursorIcon;
@@ -372,9 +618,13 @@ pub fn handle_cursor(handle: DragHandle) -> egui::CursorIcon {
         DragHandle::QuadEdge(0) | DragHandle::QuadEdge(2) => CursorIcon::ResizeVertical,
         DragHandle::QuadEdge(_) => CursorIcon::ResizeHorizontal,
         DragHandle::CircleRadius => CursorIcon::ResizeHorizontal,
-        DragHandle::CircleCenter | DragHandle::QuadMove | DragHandle::CircleMove => {
-            CursorIcon::Move
-        }
+        // Curved corners use the same precision cursor; bezier handles use a grab.
+        DragHandle::CurvedCorner(_) => CursorIcon::Crosshair,
+        DragHandle::CurvedHandle(..) => CursorIcon::Grab,
+        DragHandle::CircleCenter
+        | DragHandle::QuadMove
+        | DragHandle::CurvedMove
+        | DragHandle::CircleMove => CursorIcon::Move,
         DragHandle::None => CursorIcon::Default,
     }
 }
@@ -388,6 +638,13 @@ fn handle_dot(painter: &Painter, p: Pos2) {
         Stroke::new(1.0, Color32::from_gray(40)),
         StrokeKind::Middle,
     );
+}
+
+/// A round handle dot, used for bezier control points (to distinguish them from
+/// the square corner dots).
+fn handle_circle(painter: &Painter, p: Pos2) {
+    painter.circle_filled(p, 3.5, Color32::WHITE);
+    painter.circle_stroke(p, 3.5, Stroke::new(1.0, Color32::from_gray(40)));
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +677,26 @@ pub fn render_full(
             let (w, h) = crate::warp::natural_size(*c);
             Some([w, h])
         }
+        (
+            RipShape::CurvedQuad {
+                corners,
+                out_handles,
+                in_handles,
+            },
+            None,
+        ) => {
+            let (w, h) = crate::warp::natural_size_curved(*corners, *out_handles, *in_handles);
+            Some([w, h])
+        }
         (RipShape::Circle { .. }, None) => None,
     };
     let mut rgba = match shape {
         RipShape::Quad(c) => crate::warp::unwarp_quad(src, *c, 1.0)?,
+        RipShape::CurvedQuad {
+            corners,
+            out_handles,
+            in_handles,
+        } => crate::warp::unwarp_curved(src, *corners, *out_handles, *in_handles, 1.0)?,
         RipShape::Circle { center, radius } => extract_circle(src, *center, *radius)?,
     };
     crate::image_edit::apply_adjustments(&mut rgba, adjust);
@@ -485,6 +758,17 @@ pub fn recompute_dirty(
                 let (w, h) = crate::warp::natural_size(*c);
                 Some([w, h])
             }
+            (
+                RipShape::CurvedQuad {
+                    corners,
+                    out_handles,
+                    in_handles,
+                },
+                None,
+            ) => {
+                let (w, h) = crate::warp::natural_size_curved(*corners, *out_handles, *in_handles);
+                Some([w, h])
+            }
             (RipShape::Circle { .. }, None) => None,
         };
 
@@ -500,6 +784,23 @@ pub fn recompute_dirty(
                     crate::warp::unwarp_quad(msrc, scaled, preview_scale / ms)
                 } else {
                     crate::warp::unwarp_quad(&img.pixels, *c, 1.0)
+                }
+            }
+            RipShape::CurvedQuad {
+                corners,
+                out_handles,
+                in_handles,
+            } => {
+                if preview {
+                    // Same downscale trick as the quad: scale the corners *and*
+                    // both handle sets into mip space, warp small, report `target`.
+                    let (ms, msrc) = img.preview_source(preview_scale);
+                    let sc = (*corners).map(|p| Pos2::new(p.x * ms, p.y * ms));
+                    let so = (*out_handles).map(|v| v * ms);
+                    let si = (*in_handles).map(|v| v * ms);
+                    crate::warp::unwarp_curved(msrc, sc, so, si, preview_scale / ms)
+                } else {
+                    crate::warp::unwarp_curved(&img.pixels, *corners, *out_handles, *in_handles, 1.0)
                 }
             }
             RipShape::Circle { center, radius } => extract_circle(&img.pixels, *center, *radius),

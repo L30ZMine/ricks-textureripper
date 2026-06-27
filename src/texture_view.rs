@@ -309,17 +309,29 @@ fn toolbar(ui: &mut egui::Ui, project: &mut Project) {
 fn shape_bar(ui: &mut egui::Ui, project: &mut Project) {
     if let Some(sel) = project.editor.selected {
         if sel < project.rips.len() {
+            let mut show_curve_hint = false;
             ui.horizontal(|ui| {
                 let rip = &mut project.rips[sel];
                 ui.label("Shape:");
                 let is_quad = matches!(rip.shape, RipShape::Quad(_));
+                let is_curved = matches!(rip.shape, RipShape::CurvedQuad { .. });
+                let is_circle = matches!(rip.shape, RipShape::Circle { .. });
                 if ui.selectable_label(is_quad, "Quad (perspective)").clicked() {
                     rip_tool::set_shape_quad(rip);
                 }
-                if ui.selectable_label(!is_quad, "Circle").clicked() {
+                if ui.selectable_label(is_curved, "Curved").clicked() {
+                    rip_tool::set_shape_curved_quad(rip);
+                    show_curve_hint = !is_curved;
+                }
+                if ui.selectable_label(is_circle, "Circle").clicked() {
                     rip_tool::set_shape_circle(rip);
                 }
             });
+            if show_curve_hint {
+                project.set_status(
+                    "Drag the corner handles to bend the sides (hold Alt for a sharp corner).",
+                );
+            }
         }
     }
 }
@@ -453,7 +465,8 @@ fn canvas(ui: &mut egui::Ui, project: &mut Project) {
                 if sel < rips.len() && rips[sel].image < images.len() {
                     let x = make_xform(rect.min, view, images[rips[sel].image].pos, images[rips[sel].image].scale);
                     if let Some(ptr) = response.interact_pointer_pos() {
-                        rip_tool::apply(&mut rips[sel], editor.drag, &x, ptr, response.drag_delta());
+                        let alt = ui.input(|i| i.modifiers.alt);
+                        rip_tool::apply(&mut rips[sel], editor.drag, &x, ptr, response.drag_delta(), alt);
                     }
                 }
             }
@@ -583,8 +596,26 @@ fn canvas(ui: &mut egui::Ui, project: &mut Project) {
             let x = make_xform(rect.min, view, images[rips[sel].image].pos, images[rips[sel].image].scale);
             rip_tool::draw_rip(&rips[sel], &painter, &x, true);
             if guides.enabled {
-                if let RipShape::Quad(c) = &rips[sel].shape {
-                    rip_tool::draw_guides(c, &painter, &x, guides.vertical, guides.horizontal);
+                match &rips[sel].shape {
+                    RipShape::Quad(c) => {
+                        rip_tool::draw_guides(c, &painter, &x, guides.vertical, guides.horizontal);
+                    }
+                    RipShape::CurvedQuad {
+                        corners,
+                        out_handles,
+                        in_handles,
+                    } => {
+                        rip_tool::draw_guides_curved(
+                            corners,
+                            out_handles,
+                            in_handles,
+                            &painter,
+                            &x,
+                            guides.vertical,
+                            guides.horizontal,
+                        );
+                    }
+                    RipShape::Circle { .. } => {}
                 }
             }
         }
