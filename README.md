@@ -33,6 +33,7 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
 - **Projects** — save and open `.rtrpf` project files. Source images are embedded, so a project still loads after the originals are moved or deleted.
 - **Undo/redo**, a recent-files list, light and dark themes.
 - **Windows integration** — per-user `.rtrpf` file association.
+- and more
 
 ## Usage
 
