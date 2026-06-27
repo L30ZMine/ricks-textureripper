@@ -207,6 +207,11 @@ pub struct Rip {
     pub image: usize,
     /// Selection geometry (image-local coords).
     pub shape: RipShape,
+    /// For a [`RipShape::CurvedQuad`]: when `true` (Connected) dragging one of a
+    /// corner's two bezier handles mirrors the other for a smooth corner; when
+    /// `false` (Separate) the two handles move independently. Ignored for other
+    /// shapes. Toggled from the Texture View's Shape bar.
+    pub bezier_connected: bool,
     /// Live brightness/contrast/saturation adjustments applied to the output.
     pub adjust: Adjustments,
     /// Rotation / mirroring applied to the rip's output (rip-only).

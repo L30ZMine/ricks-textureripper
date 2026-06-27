@@ -1,4 +1,4 @@
-<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.3 </p>
+<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.4 </p>
 <p align="center">
   <img src="src/logo_long_g.png" alt="Rick's Texture Ripper" width="520">
 </p>

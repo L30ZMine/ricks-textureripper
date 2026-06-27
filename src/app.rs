@@ -1513,7 +1513,7 @@ impl App {
                         },
                     );
                     ui.add_space(16.0);
-                    ui.label("Version 1.3.3");
+                    ui.label("Version 1.3.4");
                     ui.weak(format!(
                         "Built {} {} UTC",
                         env!("BUILD_DATE"),

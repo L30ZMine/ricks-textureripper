@@ -316,20 +316,36 @@ fn shape_bar(ui: &mut egui::Ui, project: &mut Project) {
                 let is_quad = matches!(rip.shape, RipShape::Quad(_));
                 let is_curved = matches!(rip.shape, RipShape::CurvedQuad { .. });
                 let is_circle = matches!(rip.shape, RipShape::Circle { .. });
-                if ui.selectable_label(is_quad, "Quad (perspective)").clicked() {
+                if ui.selectable_label(is_quad, "Quad").clicked() {
                     rip_tool::set_shape_quad(rip);
                 }
-                if ui.selectable_label(is_curved, "Curved").clicked() {
+                if ui.selectable_label(is_curved, "Quad (bezier)").clicked() {
                     rip_tool::set_shape_curved_quad(rip);
                     show_curve_hint = !is_curved;
                 }
                 if ui.selectable_label(is_circle, "Circle").clicked() {
                     rip_tool::set_shape_circle(rip);
                 }
+
+                // Bezier-handle linkage — only meaningful for a bezier quad.
+                ui.separator();
+                ui.label("Bezier type:");
+                let mut connected = rip.bezier_connected;
+                ui.add_enabled_ui(is_curved, |ui| {
+                    if ui.selectable_label(!connected, "Separate").clicked() {
+                        connected = false;
+                    }
+                    if ui.selectable_label(connected, "Connected").clicked() {
+                        connected = true;
+                    }
+                });
+                if is_curved {
+                    rip.bezier_connected = connected;
+                }
             });
             if show_curve_hint {
                 project.set_status(
-                    "Drag the corner handles to bend the sides (hold Alt for a sharp corner).",
+                    "Drag the corner handles to bend the sides. Set Bezier type to Separate to move each handle on its own.",
                 );
             }
         }
@@ -465,8 +481,7 @@ fn canvas(ui: &mut egui::Ui, project: &mut Project) {
                 if sel < rips.len() && rips[sel].image < images.len() {
                     let x = make_xform(rect.min, view, images[rips[sel].image].pos, images[rips[sel].image].scale);
                     if let Some(ptr) = response.interact_pointer_pos() {
-                        let alt = ui.input(|i| i.modifiers.alt);
-                        rip_tool::apply(&mut rips[sel], editor.drag, &x, ptr, response.drag_delta(), alt);
+                        rip_tool::apply(&mut rips[sel], editor.drag, &x, ptr, response.drag_delta());
                     }
                 }
             }

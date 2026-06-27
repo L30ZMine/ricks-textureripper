@@ -1,6 +1,14 @@
 Rick's Texture Ripper — Changelog
 =================================
 
+[ 1.3.4 ]
+
+- New "Quad (bezier)" rip shape — bend the four sides to rip textures off
+  curved surfaces (curved walls, barrels, bottle labels). Each corner gets two
+  draggable handles; perspective flattening still applies
+- Bezier type toggle (Shape bar): Connected bends a corner's handles together
+  for a smooth curve, Separate moves each handle on its own for a sharp corner
+
 [ 1.3.3 ]
 
 - Changing the preferences/layout location now moves your data with you

@@ -50,7 +50,7 @@ fn main() -> eframe::Result<()> {
         .with_min_inner_size([800.0, 500.0])
         // Accept files dropped onto the window (OLE drag-and-drop on Windows).
         .with_drag_and_drop(true)
-        .with_title("Rick's Texture Ripper 1.3.3");
+        .with_title("Rick's Texture Ripper 1.3.4");
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -61,7 +61,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Rick's Texture Ripper 1.3.3",
+        "Rick's Texture Ripper 1.3.4",
         native_options,
         Box::new(move |_cc| Ok(Box::new(app::App::new(startup_open, storage)))),
     )

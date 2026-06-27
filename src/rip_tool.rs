@@ -144,6 +144,7 @@ pub fn add_rip(project: &mut Project) {
         name,
         image: idx,
         shape,
+        bezier_connected: true,
         adjust: crate::project::Adjustments::default(),
         orient: crate::project::Orientation::default(),
         resize: None,
@@ -396,12 +397,13 @@ fn point_in_polygon(poly: &[Pos2], x: &Xform, ptr: Pos2) -> bool {
 
 /// Applies a drag of the given handle to the rip and marks it dirty.
 ///
-/// `alt` breaks a curved corner's smooth link (dragging one bezier handle
-/// normally mirrors its partner for a smooth curve; with `alt` the two sides move
-/// independently, allowing a sharp corner). It is ignored for non-curved handles.
-pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec2, alt: bool) {
+/// For a curved corner, the rip's `bezier_connected` flag decides handle linkage:
+/// Connected mirrors a dragged handle's partner (smooth corner), Separate moves
+/// the two sides independently (sharp corner). It is ignored for other handles.
+pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec2) {
     let local = x.screen_to_local(ptr);
     let local_delta = delta / x.zoom;
+    let connected = rip.bezier_connected;
 
     match (&mut rip.shape, handle) {
         (RipShape::Quad(c), DragHandle::QuadCorner(i)) => {
@@ -432,13 +434,13 @@ pub fn apply(rip: &mut Rip, handle: DragHandle, x: &Xform, ptr: Pos2, delta: Vec
             match side {
                 HandleSide::Out => {
                     out_handles[i] = off;
-                    if !alt {
+                    if connected {
                         in_handles[i] = -off; // mirror -> smooth corner
                     }
                 }
                 HandleSide::In => {
                     in_handles[i] = off;
-                    if !alt {
+                    if connected {
                         out_handles[i] = -off;
                     }
                 }
