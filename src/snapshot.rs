@@ -1,10 +1,18 @@
+//! A serializable snapshot of a project's editable document state.
+//!
+//! Used both for undo/redo (`history.rs`) and for project files (`proj_io.rs`).
+//! Heavy pixel buffers are *not* stored — images are referenced by source path
+//! and reloaded; rip outputs are recomputed live from geometry. Selection and
+//! active-image are captured/restored but excluded from change detection.
+
 use egui::{Pos2, Vec2};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::project::{Adjustments, AtlasSettings, Guides, LoadedImage, Project, Rip};
+use crate::project::{Adjustments, AtlasSettings, Guides, LoadedImage, Orientation, Project, Rip};
 use crate::rip_tool::{DragHandle, RipShape};
 
+/// Serializable form of a rip's geometry (avoids depending on egui type serde).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum SerShape {
     Quad([[f32; 2]; 4]),
@@ -50,7 +58,7 @@ pub struct ImageState {
     pub pos: [f32; 2],
     pub size: [usize; 2],
     pub adjust: Adjustments,
-
+    /// Display-only Texture View scale (older files default to 1.0).
     #[serde(default = "default_scale")]
     pub scale: f32,
 }
@@ -65,8 +73,11 @@ pub struct RipState {
     pub image: usize,
     pub shape: SerShape,
     pub adjust: Adjustments,
+    /// Rotation / mirroring of the rip output (older files default to none).
+    #[serde(default)]
+    pub orient: Orientation,
     pub resize: Option<[u32; 2]>,
-
+    /// Manual atlas placement (top-left, atlas px); `None` in Automatic sort.
     #[serde(default)]
     pub atlas_pos: Option<[f32; 2]>,
 }
@@ -82,7 +93,8 @@ pub struct ProjectSnapshot {
 }
 
 impl ProjectSnapshot {
-
+    /// Compares only the document (ignores selection/active-image), so that
+    /// selecting or panning doesn't register as an undoable change.
     pub fn same_document(&self, other: &Self) -> bool {
         self.images == other.images
             && self.rips == other.rips
@@ -91,6 +103,7 @@ impl ProjectSnapshot {
     }
 }
 
+/// Captures the current editable state of `project`.
 pub fn capture(project: &Project) -> ProjectSnapshot {
     ProjectSnapshot {
         images: project
@@ -113,6 +126,7 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
                 image: r.image,
                 shape: SerShape::from_shape(&r.shape),
                 adjust: r.adjust,
+                orient: r.orient,
                 resize: r.resize,
                 atlas_pos: r.atlas_pos,
             })
@@ -124,6 +138,9 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
     }
 }
 
+/// Restores `snap` into `project`, reusing already-loaded images (matched by
+/// source path) and reloading any that are missing. Rips and images are marked
+/// dirty so their outputs recompute live.
 pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapshot) {
     let mut existing = std::mem::take(&mut project.images);
     let mut images: Vec<LoadedImage> = Vec::with_capacity(snap.images.len());
@@ -159,9 +176,11 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             image: rs.image,
             shape: rs.shape.to_shape(),
             adjust: rs.adjust,
+            orient: rs.orient,
             resize: rs.resize,
             atlas_pos: rs.atlas_pos,
             dirty: true,
+            previewed: false,
             output: None,
         })
         .collect();
@@ -173,5 +192,4 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
     project.editor.selected = snap.selected.filter(|&i| i < project.rips.len());
     project.editor.drag = DragHandle::None;
     project.atlas_dirty = true;
-    project.needs_full = false;
 }

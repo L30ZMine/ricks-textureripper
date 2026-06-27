@@ -10,9 +10,13 @@ use crate::project::Project;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2};
 use egui_dock::TabViewer;
 
-/// Fixed cell width (px) of one rip gallery item, used to size the responsive
-/// column count and to keep every item the same footprint.
+/// Fixed cell width (px) of one rip gallery item's *content* (the group's inner
+/// width), used to size the responsive column count and keep a uniform footprint.
 const ITEM_WIDTH: f32 = 110.0;
+/// Extra width an item's `ui.group` frame adds around `ITEM_WIDTH`: inner margin
+/// (2×6) + stroke (2×1). Included in the column-count maths so the last column
+/// isn't cut off (the previous calc ignored it, so columns dropped ~14px late).
+const ITEM_FRAME: f32 = 14.0;
 /// Fixed thumbnail box size (px); images are fit inside, centered.
 const THUMB: f32 = 92.0;
 
@@ -25,9 +29,6 @@ fn rip_gallery(ui: &mut egui::Ui, project: &mut Project) {
         return;
     }
 
-    let avail = ui.available_width().max(ITEM_WIDTH);
-    let cols = ((avail / ITEM_WIDTH).floor() as usize).max(1);
-
     let selected = project.editor.selected;
     let mut select: Option<usize> = None;
     let mut remove: Option<usize> = None;
@@ -35,6 +36,14 @@ fn rip_gallery(ui: &mut egui::Ui, project: &mut Project) {
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
+            // Compute the column count *inside* the scroll area so the (possible)
+            // scrollbar is already subtracted from the width. Each item occupies
+            // `ITEM_WIDTH + ITEM_FRAME`, with `item_spacing.x` between items:
+            // fit the most columns where `n*item + (n-1)*spacing <= avail`.
+            let avail = ui.available_width().max(ITEM_WIDTH);
+            let spacing = ui.spacing().item_spacing.x;
+            let item = ITEM_WIDTH + ITEM_FRAME;
+            let cols = (((avail + spacing) / (item + spacing)).floor() as usize).max(1);
             let n = project.rips.len();
             let mut i = 0;
             while i < n {
@@ -156,16 +165,29 @@ impl<'a> TabViewer for DockViewer<'a> {
         .into()
     }
 
-    /// Panels are part of the fixed workspace layout; don't let the user close
-    /// them (there's no UI yet to bring them back).
+    /// Panels can be closed from their tab's X button; the default `on_close`
+    /// (which returns true) removes the tab. This integrates with the Window menu,
+    /// which tracks open panels via `find_tab` — re-checking a panel there brings
+    /// it back. (Previously this was `false`, which still drew the X but disabled
+    /// it, showing a "not allowed" cursor on hover.)
     fn closeable(&mut self, _tab: &mut Self::Tab) -> bool {
-        false
+        true
     }
 
     /// Never let a tab be dragged out into a floating window — detaching is not
     /// supported here (it previously crashed); panels stay docked.
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {
         false
+    }
+
+    /// Don't wrap a panel body in egui_dock's auto scroll area. When a panel's
+    /// content (e.g. a zoomed-in Atlas preview) is bigger than the panel, it's
+    /// simply **clipped** — the user resizes the panel or zooms out rather than
+    /// getting a janky window-culling scrollbar. Panels that genuinely need to
+    /// scroll (the Rips Gallery) use their *own* `ScrollArea` inside `ui`, which
+    /// this doesn't affect.
+    fn scroll_bars(&self, _tab: &Self::Tab) -> [bool; 2] {
+        [false, false]
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {

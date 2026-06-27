@@ -23,6 +23,29 @@ pub fn register() {
 #[cfg(not(windows))]
 pub fn register() {}
 
+/// Removes the per-user `.rtrpf` association (the inverse of [`register`]),
+/// including the cached document icon. Run during uninstall in the invoking
+/// user's context (HKCU is per-user, so this must NOT run in the elevated worker,
+/// which would touch a different user's hive). Best-effort.
+#[cfg(windows)]
+pub fn unregister() {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let _ = hkcu.delete_subkey_all(r"Software\Classes\.rtrpf");
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{PROG_ID}"));
+    // Drop the cached document icon (and its folder, if now empty).
+    if let Some(dir) = dirs::data_local_dir().map(|d| d.join("ricks-textureripper")) {
+        let _ = std::fs::remove_file(dir.join("rtrpf.ico"));
+        let _ = std::fs::remove_dir(&dir);
+    }
+    notify_shell();
+}
+
+/// No-op on non-Windows platforms.
+#[cfg(not(windows))]
+pub fn unregister() {}
+
 #[cfg(windows)]
 const PROG_ID: &str = "RicksTextureRipper.Project";
 

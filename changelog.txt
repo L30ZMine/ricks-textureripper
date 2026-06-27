@@ -1,6 +1,59 @@
 Rick's Texture Ripper — Changelog
 =================================
 
+[ 1.3.3 ]
+
+- Changing the preferences/layout location now moves your data with you
+  (layouts, autosaves & settings — no more vanishing layouts; the switch sticks)
+- If preferences exist in two places, you're asked which to use (with the
+  last-modified time of each), and can fold the other copy in to stop asking
+- Setup detects an existing install and offers to update it to this version
+- Installs now register in Windows "Apps & features" — uninstall the normal way
+  (Settings > Apps); uninstalling asks whether to also delete your settings
+- Panel canvases no longer sprout a window-culling scrollbar — they clip;
+  resize or zoom out instead. Image Edit still scrolls vertically, the Rips
+  Gallery as before, and the View toolbars now scroll sideways when too narrow
+  (thinner scrollbars that no longer overlap the toolbar text, and only take
+  space when actually needed — no canvas jump)
+- Info-on-startup toggle is now respected after the first run (closing the
+  Info window only auto-disables it the very first time you launch)
+
+[ 1.3.2 ]
+
+- New Blender-style Preferences window (Edit > Preferences)
+- Interface zoom (40%–200%), Light/Dark mode moved here
+- Autosave on/off + interval, update-check toggle, reopen-last-project
+- Global preview quality & grab margin
+- Ask before closing an unsaved project (with "don't ask again")
+- Warn before huge atlas rip resizes (>3000 px)
+- Big performance pass — the app stays responsive while it works:
+  - Full-res rip render moved to a background thread (no more freeze on release)
+  - Grabbing a rip again cancels the render and resumes the live preview
+  - Adding images loads off-thread with a % shown by the cursor
+  - Multi-core perspective warp & colour edits
+- Panels close from their tab's ✕ and reopen via the Window menu
+- Tint colour: overlay a colour onto a rip/image (Multiply blend)
+- Atlas Snap now works in both sort modes (and with Shift-aspect resize)
+- Quit confirmation honours the "don't ask again" toggle
+- Fixed rip-gallery column wrapping and the colour-picker size
+- Colour picker: a #hex web-code field + Copy button at the top
+- Fixed crash-recovery wrongly offering already-saved projects
+- Ctrl+I toggles the Info window; tidier tabs & menus
+
+[ 1.3.1 ]
+
+- New image edits: hue, gamma, temperature, sharpen, blur
+- Background removal (colour key → transparent)
+- Rotate / flip rips
+- More image options coming; pick a colour to key out
+- Tighter automatic packing (searches for the layout with the fewest holes)
+- Switching to Manual sort no longer moves/resizes rips
+- Switching atlas aspect ratio now repacks
+- Atlas & Texture views: second toolbar row moved to a bottom bar
+- Auto-update (silent) from the latest GitHub release
+- Saved project name now matches the file (no more stray "unnamed")
+- About window shows the build time
+
 [ 1.3.0 ]
 
 - Tighter automatic atlas packing

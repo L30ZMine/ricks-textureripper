@@ -46,10 +46,47 @@ pub fn start_session() -> (bool, Vec<Recoverable>) {
 }
 
 /// Marks a clean shutdown (removes the running marker), so the next start does
-/// not treat it as a crash.
+/// not treat it as a crash. Also clears all autosaves: a clean shutdown means
+/// nothing was lost, so leaving stale autosaves behind would make a *later* crash
+/// wrongly offer to "recover" work that was already saved (or deliberately
+/// discarded). Recovery is only meaningful after an unclean exit.
 pub fn mark_clean_shutdown() {
     if let Some(p) = lock_path() {
         let _ = fs::remove_file(p);
+    }
+    clear_all();
+}
+
+/// Deletes every autosave file (called on a clean shutdown). Best-effort.
+pub fn clear_all() {
+    let Some(dir) = dir() else { return };
+    let Ok(read) = fs::read_dir(&dir) else { return };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rtrpf") {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Deletes the autosaves belonging to one project (matched by its per-session
+/// `id`, so a Save-As rename still clears the right group). Called after a
+/// successful manual save — the work is persisted, so its autosaves are no longer
+/// needed for recovery. Best-effort.
+pub fn clear_project(id: u64) {
+    let Some(dir) = dir() else { return };
+    let Ok(read) = fs::read_dir(&dir) else { return };
+    let suffix = format!("__{id}");
+    for entry in read.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+        if !name.ends_with(".rtrpf") {
+            continue;
+        }
+        // The group is `<name>__<id>`; match files whose id segment is ours.
+        if group_of(name).is_some_and(|g| g.ends_with(&suffix)) {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 

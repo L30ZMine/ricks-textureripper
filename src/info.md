@@ -22,12 +22,15 @@ Rip flat textures out of photos, un-warp their perspective, and pack them into a
 - Drag a **corner** to warp the perspective freely; drag an **edge** to move that whole side.
 - Drag **inside** the selection to move it.
 - Switch a rip between **Quad** and **Circle**; **Remove Rip** / **Delete** removes it.
-- Toggle subdivision **guide lines** with the top-right `#` icon or Edit > Guide Lines.
-- **Edit > Cursor Interp** tunes the handle grab margin; **Edit > Preview Quality** trades live-preview sharpness for speed.
+- Toggle subdivision **guide lines** with the top-right `#` icon or in **Edit > Preferences** (Editing).
+- **Edit > Preferences** (Editing) tunes the handle grab margin and the live-preview quality.
 
 ## Image Edit panel
 
-- **Brightness / Contrast / Saturation** sliders, non-destructive.
+- **Brightness / Contrast / Saturation / Hue / Temperature / Gamma** sliders, non-destructive.
+- **Sharpen / Blur** filters, and **Remove background colour** (pick a colour + tolerance to key it out to transparent).
+- **Tint colour** — overlay a colour onto the rip/image (Multiply blend, with an amount slider).
+- **Rotate / Flip** the selected rip's output (rip-only; the atlas re-packs around it).
 - **Resize** the source image (its rips stay locked to the same features).
 - Edits the **selected rip** if one is selected, otherwise the **active image**.
 
@@ -47,7 +50,8 @@ Rip flat textures out of photos, un-warp their perspective, and pack them into a
 - **New / Open / Save / Save As** project files (`.rtrpf`). Projects are **self-contained** — the source images are embedded, so moving or deleting the originals won't break a saved project. Double-clicking a `.rtrpf` opens it.
 - **File > Open Recent** lists recently used projects.
 - **Undo / Redo** (Ctrl+Z / Ctrl+Y).
-- **Window** menu toggles panels (Alt+1–4) and **Light Mode**.
+- **Window** menu toggles panels (Alt+1–4); panels can also be closed from their tab's ✕ and reopened here.
+- **Edit > Preferences** holds interface zoom, **Light / Dark mode**, autosave, update checks, editing defaults, and the confirmation-prompt resets.
 - **Layout** menu saves, loads, and sets the startup panel arrangement.
 
 ## Hotkeys
@@ -65,6 +69,7 @@ Rip flat textures out of photos, un-warp their perspective, and pack them into a
 
 - **Ctrl+T** Add Image · **Ctrl+R** Add Rip · **Ctrl+F** New Project · **Ctrl+Q** Quit
 - **Ctrl+G** Open Project · **Ctrl+S** Save · **Ctrl+Shift+S** Save As · **Ctrl+X** Export Atlas
+- **Ctrl+I** Info window
 - **Ctrl+Z** Undo · **Ctrl+Y** / **Ctrl+Shift+Z** Redo
 - **Delete** / **Backspace** — remove the selected rip, else the active image
 
@@ -74,4 +79,4 @@ Rip flat textures out of photos, un-warp their perspective, and pack them into a
 
 ---
 
-*Version 1.3 — written 2026-06-25.*
+*Version 1.3 — written 2026-06-26.*

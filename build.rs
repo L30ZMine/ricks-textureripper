@@ -11,8 +11,12 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let (y, m, d) = civil_from_days(secs / 86_400);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
     println!("cargo:rustc-env=BUILD_DATE={y:04}-{m:02}-{d:02}");
+    // Time-of-day (UTC) so the About window can show the build hour:minute.
+    let sod = secs.rem_euclid(86_400);
+    let (hh, mm) = (sod / 3_600, (sod % 3_600) / 60);
+    println!("cargo:rustc-env=BUILD_TIME={hh:02}:{mm:02}");
 
     #[cfg(windows)]
     {

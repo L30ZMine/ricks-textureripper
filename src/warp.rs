@@ -62,21 +62,49 @@ pub fn unwarp_quad(src: &RgbaImage, corners: [Pos2; 4], scale: f32) -> Option<Rg
     let sh = src.height() as f64;
     let mut out = RgbaImage::new(out_w, out_h);
 
-    for oy in 0..out_h {
+    // Per-output-row work (the hot loop): map each pixel back through the
+    // homography and bilinearly sample the source. Pixels outside the source stay
+    // transparent (the buffer is zero-initialised).
+    let fill_row = |oy: u32, row: &mut [u8]| {
+        let v = oy as f64 + 0.5;
         for ox in 0..out_w {
             let u = ox as f64 + 0.5;
-            let v = oy as f64 + 0.5;
             let den = h[6] * u + h[7] * v + h[8];
             if den.abs() < 1e-12 {
-                continue; // leave transparent
+                continue;
             }
             let x = (h[0] * u + h[1] * v + h[2]) / den;
             let y = (h[3] * u + h[4] * v + h[5]) / den;
             if x < 0.0 || y < 0.0 || x > sw - 1.0 || y > sh - 1.0 {
-                continue; // outside source -> transparent
+                continue;
             }
-            out.put_pixel(ox, oy, sample_bilinear(src, x, y));
+            let off = ox as usize * 4;
+            row[off..off + 4].copy_from_slice(&sample_bilinear(src, x, y).0);
         }
+    };
+
+    // The perspective warp is the single most expensive operation, so spread the
+    // output rows across all CPU cores. Small outputs (e.g. a downscaled live
+    // preview) stay single-threaded to avoid thread-spawn overhead.
+    let stride = out_w as usize * 4;
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if threads <= 1 || out_h < 64 {
+        for (oy, row) in out.chunks_mut(stride).enumerate() {
+            fill_row(oy as u32, row);
+        }
+    } else {
+        let rows_per = (out_h as usize).div_ceil(threads);
+        std::thread::scope(|s| {
+            for (band, chunk) in out.chunks_mut(rows_per * stride).enumerate() {
+                let fill_row = &fill_row;
+                let row0 = (band * rows_per) as u32;
+                s.spawn(move || {
+                    for (i, row) in chunk.chunks_mut(stride).enumerate() {
+                        fill_row(row0 + i as u32, row);
+                    }
+                });
+            }
+        });
     }
 
     Some(out)

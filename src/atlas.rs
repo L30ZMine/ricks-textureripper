@@ -76,19 +76,20 @@ pub fn repack(project: &mut Project) {
     // Per-rip top-left positions (atlas pixels), depending on the sort mode.
     let positions = match settings.sort_mode {
         SortMode::Automatic => {
-            // Pack toward the user's chosen aspect so the rips fill it tightly:
-            // Square -> 1:1, Custom -> the export W:H, Automatic -> square-ish
-            // (the bounds then re-derive to the packed aspect below).
-            let target_aspect = match settings.aspect_mode {
-                AspectMode::Square => 1.0,
-                AspectMode::Automatic => 1.0,
+            // Pack toward the user's chosen aspect so the rips fill it tightly.
+            // Square -> 1:1, Custom -> the export W:H. Automatic leaves the aspect
+            // free and picks whatever shape packs tightest (the bounds then
+            // re-derive to it below), which best minimises holes.
+            let packed = match settings.aspect_mode {
+                AspectMode::Automatic => best_pack(&pack_items, pad),
+                AspectMode::Square => pack_aspect(&pack_items, pad, 1.0),
                 AspectMode::Custom => {
                     let w = if settings.export_w == 0 { 1 } else { settings.export_w };
                     let h = if settings.export_h == 0 { 1 } else { settings.export_h };
-                    w as f32 / h.max(1) as f32
+                    pack_aspect(&pack_items, pad, w as f32 / h.max(1) as f32)
                 }
             };
-            match pack_aspect(&pack_items, pad, target_aspect) {
+            match packed {
                 Some(p) => p,
                 None => {
                     *status = Some("Atlas: too many rips to pack.".to_string());
@@ -187,10 +188,28 @@ fn median(v: &[f32]) -> f32 {
     }
 }
 
-/// Packs `items` (each inflated by `pad`) into the smallest bin of roughly
-/// `target_aspect` (w/h) that fits, so the result is tight and fills the chosen
-/// aspect instead of sprawling into a thin strip. Starts from the area lower
-/// bound and grows geometrically until the pack succeeds.
+/// Shrink-wrapped extent of a placement set: the bounding `(width, height)` the
+/// rips actually occupy (max `x + w`, `y + h`). Used to score how tightly a
+/// candidate bin packed — the smaller the bounding area, the fewer holes.
+fn packed_extent(
+    positions: &HashMap<usize, (u32, u32)>,
+    items: &[(usize, u32, u32)],
+) -> (u32, u32) {
+    let mut w = 0u32;
+    let mut h = 0u32;
+    for &(i, iw, ih) in items {
+        if let Some(&(x, y)) = positions.get(&i) {
+            w = w.max(x + iw);
+            h = h.max(y + ih);
+        }
+    }
+    (w, h)
+}
+
+/// Packs `items` (each inflated by `pad`) toward `target_aspect` (w/h), trying a
+/// spread of bin shapes around the area-derived ideal and keeping the one whose
+/// shrink-wrapped result has the **least bounding area** — i.e. the tightest
+/// packing with the fewest holes (rather than just the first bin that fits).
 fn pack_aspect(
     items: &[(usize, u32, u32)],
     pad: u32,
@@ -205,20 +224,44 @@ fn pack_aspect(
     let tallest = items.iter().map(|&(_, _, h)| h + pad).max().unwrap_or(1);
 
     // height from area: w*h = (h*aspect)*h => h = sqrt(area / aspect).
-    let mut bin_h = ((total / aspect as f64).sqrt().ceil() as u32).max(tallest);
-    for _ in 0..64 {
-        let h = bin_h.max(tallest);
+    let base_h = (total / aspect as f64).sqrt().max(1.0);
+    let mut best: Option<(u64, HashMap<usize, (u32, u32)>)> = None;
+    // Sweep squat→tall bins around the ideal; each candidate that packs is scored
+    // by its shrink-wrapped bounding area and the smallest wins.
+    for k in [0.55, 0.7, 0.85, 1.0, 1.15, 1.35, 1.6, 1.9, 2.3, 2.8] {
+        let h = ((base_h * k).ceil() as u32).max(tallest);
         let w = (((h as f32) * aspect).ceil() as u32).max(widest);
         if w > MAX_BIN || h > MAX_BIN {
-            break;
+            continue;
         }
         if let Some(p) = try_pack(items, pad, w, h) {
-            return Some(p);
+            let (ew, eh) = packed_extent(&p, items);
+            let area = ew as u64 * eh as u64;
+            if best.as_ref().map_or(true, |(a, _)| area < *a) {
+                best = Some((area, p));
+            }
         }
-        bin_h = ((h as f32) * 1.1).ceil() as u32 + 1;
     }
-    // Last resort: one big square bin (matches the pre-1.2 behaviour).
-    try_pack(items, pad, MAX_BIN, MAX_BIN)
+    best.map(|(_, p)| p)
+        // Last resort: one big square bin (matches the pre-1.2 behaviour).
+        .or_else(|| try_pack(items, pad, MAX_BIN, MAX_BIN))
+}
+
+/// Packs `items` with the aspect ratio left free: tries several target aspects
+/// and returns the tightest result (least bounding area). Used by the Automatic
+/// aspect mode, where the bounds re-derive to whatever shape packs best.
+fn best_pack(items: &[(usize, u32, u32)], pad: u32) -> Option<HashMap<usize, (u32, u32)>> {
+    let mut best: Option<(u64, HashMap<usize, (u32, u32)>)> = None;
+    for aspect in [0.5, 0.66, 0.8, 1.0, 1.25, 1.5, 2.0] {
+        if let Some(p) = pack_aspect(items, pad, aspect) {
+            let (ew, eh) = packed_extent(&p, items);
+            let area = ew as u64 * eh as u64;
+            if best.as_ref().map_or(true, |(a, _)| area < *a) {
+                best = Some((area, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// One bin-pack attempt into a `bin_w`×`bin_h` bin; `None` if it doesn't fit.
@@ -345,23 +388,34 @@ fn snap_coord(v: f32, targets: &[f32], step: u32, edge_thresh: f32) -> f32 {
     }
 }
 
-/// Seeds `atlas_pos` for any rip that hasn't got one from the current packed
-/// placements, so switching to Manual starts exactly where Automatic left off.
-/// Already-positioned rips are left untouched (toggling modes never loses a
-/// hand-made layout).
+/// Seeds `atlas_pos` (and a baked size) for any rip that hasn't got one from the
+/// current packed placements, so switching to Manual starts *exactly* where
+/// Automatic left off — same position **and** same size.
+///
+/// Automatic scales non-custom rips toward a fair common size, but Manual sizes
+/// each rip by its own `resize`/natural output. Without baking, a rip that
+/// Automatic scaled would jump to its natural size on switch (the bug this
+/// fixes), so the placed size is captured into `resize` for rips that don't
+/// already have an explicit one. Already-positioned rips (a prior hand layout)
+/// are left untouched.
 pub fn seed_manual_positions(project: &mut Project) {
-    let seeds: Vec<(usize, [f32; 2])> = match &project.atlas.result {
+    let seeds: Vec<(usize, [f32; 2], [u32; 2])> = match &project.atlas.result {
         Some(res) => res
             .placements
             .iter()
             .filter(|p| project.rips.get(p.rip).is_some_and(|r| r.atlas_pos.is_none()))
-            .map(|p| (p.rip, [p.x as f32, p.y as f32]))
+            .map(|p| (p.rip, [p.x as f32, p.y as f32], [p.w, p.h]))
             .collect(),
         None => Vec::new(),
     };
-    for (i, pos) in seeds {
+    for (i, pos, size) in seeds {
         if let Some(r) = project.rips.get_mut(i) {
             r.atlas_pos = Some(pos);
+            // Lock in the size the rip was shown at so it doesn't resize on switch.
+            if r.resize.is_none() {
+                r.resize = Some(size);
+                r.dirty = true;
+            }
         }
     }
 }
@@ -389,7 +443,17 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
     // takes effect next frame — avoids editing it mid-row.
     let aspect_mode = project.atlas.settings.aspect_mode;
 
-    // Row 1: Padding, Aspect ratio, Width, Height, Export, rip count.
+    // Row 1 lives in a top toolbar: Padding, Aspect ratio, Width, Height,
+    // Export, rip count.
+    egui::TopBottomPanel::top("atlas_toolbar").show_inside(ui, |ui| {
+    ui.add_space(2.0);
+    // Horizontal scroll so a narrow panel scrolls Row 1 rather than clipping it
+    // (the dock no longer wraps panels in a scrollbar).
+    crate::ui::thin_scrollbar(ui);
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, true])
+        .id_salt("atlas_toolbar_scroll")
+        .show(ui, |ui| {
     ui.horizontal(|ui| {
         ui.label("Padding");
         if ui
@@ -434,6 +498,7 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
                         project.atlas.settings.export_w = cur_w.max(1);
                         project.atlas.settings.export_h =
                             ((cur_w as f32 / a.max(0.01)).round() as u32).max(1);
+                        project.atlas_dirty = true;
                     }
                 }
                 // Locked (read-only) in Automatic/Square.
@@ -497,6 +562,7 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
                         if project.atlas.settings.export_h == 0 {
                             project.atlas.settings.export_h = nat_h;
                         }
+                        project.atlas_dirty = true;
                     }
                     let mut h = cur_h;
                     ui.label("Height");
@@ -508,6 +574,7 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
                         if project.atlas.settings.export_w == 0 {
                             project.atlas.settings.export_w = nat_w;
                         }
+                        project.atlas_dirty = true;
                     }
                 }
             }
@@ -529,9 +596,20 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
             ui.label(format!("{} rip(s)", project.rips.len()));
         }
     });
+    });
+    ui.add_space(2.0);
+    });
 
-    // Row 2: sort mode, aspect-ratio mode, and view controls.
+    // Row 2 lives in a bottom bar: sort mode, aspect-ratio mode, view controls.
     let prev_sort = project.atlas.settings.sort_mode;
+    let prev_aspect = project.atlas.settings.aspect_mode;
+    egui::TopBottomPanel::bottom("atlas_bottom_bar").show_inside(ui, |ui| {
+    ui.add_space(5.0);
+    crate::ui::thin_scrollbar(ui);
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, true])
+        .id_salt("atlas_bottom_bar_scroll")
+        .show(ui, |ui| {
     ui.horizontal(|ui| {
         ui.label("Sort");
         egui::ComboBox::from_id_salt("atlas_sort_mode")
@@ -583,25 +661,32 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
             project.atlas.view = AtlasView::default();
         }
         ui.label(format!("{:.0}%", project.atlas.view.zoom * 100.0));
+        // Snap is available in both sort modes — it snaps the resize grip (used in
+        // Automatic and Manual) as well as dragged-rip placement (Manual).
+        ui.separator();
+        ui.checkbox(&mut project.atlas.settings.snap_enabled, "Snap").on_hover_text(
+            "Snap the resize grip (and, in Manual, dragged rips) to a grid and nearby edges.",
+        );
+        if project.atlas.settings.snap_enabled {
+            ui.add(
+                egui::DragValue::new(&mut project.atlas.settings.snap_step)
+                    .range(1..=256)
+                    .suffix(" px"),
+            )
+            .on_hover_text("Grid step");
+        }
         if matches!(project.atlas.settings.sort_mode, SortMode::Manual) {
-            ui.separator();
-            ui.checkbox(&mut project.atlas.settings.snap_enabled, "Snap")
-                .on_hover_text("Snap dragged rips to a grid and to nearby rip / canvas edges.");
-            if project.atlas.settings.snap_enabled {
-                ui.add(
-                    egui::DragValue::new(&mut project.atlas.settings.snap_step)
-                        .range(1..=256)
-                        .suffix(" px"),
-                )
-                .on_hover_text("Grid step");
-            }
             ui.separator();
             ui.weak("drag rips to arrange");
         }
     });
+    });
+    ui.add_space(2.0);
+    });
 
-    // A sort-mode change repacks; entering Manual seeds positions from the
-    // current automatic layout (existing manual positions are preserved).
+    // A sort-mode change repacks; entering Manual seeds positions (and sizes) from
+    // the current automatic layout so nothing jumps. An aspect-ratio change also
+    // repacks (the Automatic/Custom pack targets depend on the chosen aspect).
     if project.atlas.settings.sort_mode != prev_sort {
         project.atlas_dirty = true;
         project.modified = true;
@@ -609,10 +694,15 @@ pub fn ui(ui: &mut egui::Ui, project: &mut Project) {
             seed_manual_positions(project);
         }
     }
+    if project.atlas.settings.aspect_mode != prev_aspect {
+        project.atlas_dirty = true;
+        project.modified = true;
+    }
 
-    ui.separator();
-
-    preview(ui, project);
+    // The pan/zoomable preview fills the space between the toolbar and bottom bar.
+    egui::CentralPanel::default()
+        .frame(egui::Frame::new())
+        .show_inside(ui, |ui| preview(ui, project));
 }
 
 /// Draws the pan/zoomable packed-atlas preview. Clicking a rip selects it; the
@@ -799,16 +889,18 @@ fn preview(ui: &mut egui::Ui, project: &mut Project) {
             if let (Some(p), Some(pt)) = (sel_placement, response.interact_pointer_pos()) {
                 let mut nw = ((pt.x - origin.x) / u - p.x as f32).clamp(1.0, 8192.0);
                 let mut nh = ((pt.y - origin.y) / u - p.y as f32).clamp(1.0, 8192.0);
+                let aspect = if p.h > 0 { p.w as f32 / p.h as f32 } else { 1.0 };
                 // Shift locks the rip's current aspect ratio: the axis dragged
                 // furthest (relative to its size) drives a uniform scale.
                 if shift && p.w > 0 && p.h > 0 {
-                    let aspect = p.w as f32 / p.h as f32;
                     let scale = (nw / p.w as f32).max(nh / p.h as f32);
                     nw = (p.w as f32 * scale).clamp(1.0, 8192.0);
                     nh = (nw / aspect).clamp(1.0, 8192.0);
-                } else if snap_enabled {
-                    // Snap the dragged corner (right/bottom edge) to a grid step or
-                    // a nearby other-rip / canvas edge, then derive the new size.
+                }
+                // Snap also applies *with* Shift: snap the right edge to a grid step
+                // / nearby edge, then keep the aspect (Shift) or snap the bottom edge
+                // independently.
+                if snap_enabled {
                     let mut xs = vec![0.0f32];
                     let mut ys = vec![0.0f32];
                     for pl in &res.placements {
@@ -821,9 +913,13 @@ fn preview(ui: &mut egui::Ui, project: &mut Project) {
                         ys.push((pl.y + pl.h) as f32);
                     }
                     let right = snap_coord(p.x as f32 + nw, &xs, snap_step, edge_thresh);
-                    let bottom = snap_coord(p.y as f32 + nh, &ys, snap_step, edge_thresh);
                     nw = (right - p.x as f32).clamp(1.0, 8192.0);
-                    nh = (bottom - p.y as f32).clamp(1.0, 8192.0);
+                    if shift && p.w > 0 && p.h > 0 {
+                        nh = (nw / aspect).clamp(1.0, 8192.0);
+                    } else {
+                        let bottom = snap_coord(p.y as f32 + nh, &ys, snap_step, edge_thresh);
+                        nh = (bottom - p.y as f32).clamp(1.0, 8192.0);
+                    }
                 }
                 ui.data_mut(|d| d.insert_temp(size_id, [nw.round() as u32, nh.round() as u32]));
             }

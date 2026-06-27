@@ -11,6 +11,7 @@ mod install;
 mod layouts;
 mod proj_io;
 mod project;
+mod render;
 mod rip_tool;
 mod snapshot;
 mod texture_view;
@@ -19,6 +20,12 @@ mod update;
 mod warp;
 
 fn main() -> eframe::Result<()> {
+    // `--uninstall` (from the Apps & features entry's UninstallString) runs the
+    // removal flow instead of launching the app, then exits.
+    if handle_uninstall_arg() {
+        return Ok(());
+    }
+
     // Associate `.rtrpf` files with this app so Explorer shows our icon for them.
     file_assoc::register();
 
@@ -33,16 +40,17 @@ fn main() -> eframe::Result<()> {
                 .is_some_and(|e| e.eq_ignore_ascii_case(proj_io::EXTENSION))
         });
 
-    // Resolve where preferences live and whether this is the first run (no config
-    // in either candidate location yet → the app shows its setup dialog).
-    let first_run = resolve_storage();
+    // Resolve where preferences live: first run (setup dialog), a single resolved
+    // location, or a conflict (config in both Documents and a portable folder →
+    // the app asks the user which to use).
+    let storage = layouts::resolve();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([800.0, 500.0])
         // Accept files dropped onto the window (OLE drag-and-drop on Windows).
         .with_drag_and_drop(true)
-        .with_title("Rick's Texture Ripper 1.3.0");
+        .with_title("Rick's Texture Ripper 1.3.3");
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -53,29 +61,22 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Rick's Texture Ripper 1.3.0",
+        "Rick's Texture Ripper 1.3.3",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(app::App::new(startup_open, first_run)))),
+        Box::new(move |_cc| Ok(Box::new(app::App::new(startup_open, storage)))),
     )
 }
 
-/// Decides where config/layouts are read from and whether this is a first run.
-/// A portable install (config next to the exe) wins; otherwise Documents is used.
-/// Returns `true` when no config exists in either place yet.
-fn resolve_storage() -> bool {
-    let portable = layouts::portable_dir();
-    if portable
-        .as_ref()
-        .is_some_and(|d| d.join("config.json").exists())
-    {
-        if let Some(p) = portable {
-            layouts::set_app_dir(p);
-        }
-        return false;
+/// Handles the `--uninstall` command line (the Apps & features `UninstallString`):
+/// runs the removal flow and returns `true` so `main` exits without starting the
+/// app. `--quiet` keeps user data without prompting. No-op (returns `false`) when
+/// the flag isn't present or off Windows.
+fn handle_uninstall_arg() -> bool {
+    if std::env::args().any(|a| a == "--uninstall") {
+        install::run_uninstall(std::env::args().any(|a| a == "--quiet"));
+        return true;
     }
-    // Default to Documents (no override needed); first run if it has no config.
-    !layouts::documents_dir()
-        .is_some_and(|d| d.join("config.json").exists())
+    false
 }
 
 /// Decodes the embedded `logo_g.ico` into the eframe window/taskbar icon.

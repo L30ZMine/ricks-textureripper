@@ -1,16 +1,17 @@
-<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.1 </p>
+<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.3 </p>
 <p align="center">
   <img src="src/logo_long_g.png" alt="Rick's Texture Ripper" width="520">
 </p>
 Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of photos and packing them into a texture atlas. Select a region in a photo, correct its perspective, and the result is added to a single atlas image you can export.
 
 <p align="center">
-<img src="screens/Screenshot1.png" alt="Rick's Texture Ripper" width="320">
-<img src="screens/Screenshot2.png" alt="Rick's Texture Ripper" width="320">
+<img src="screens/Screen%20(1).png" alt="Rick's Texture Ripper" width="320">
+<img src="screens/Screen%20(2).png" alt="Rick's Texture Ripper" width="320">
 </p>
-
-
-
+<p align="center">
+<img src="screens/Screen%20(3).png" alt="Rick's Texture Ripper" width="320">
+<img src="screens/Screen%20(4).png" alt="Rick's Texture Ripper" width="320">
+</p>
 
 ## Navigation
 
@@ -27,7 +28,7 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
   - *Automatic* sort packs rips tightly into the chosen aspect ratio and scales non-custom rips toward an even size.
   - *Manual* sort lets you place each rip by hand, with optional snapping to a grid and to nearby rip edges.
 - **Aspect ratio control** — Automatic, Square, or Custom width/height; rips are never stretched.
-- **Image adjustments** — non-destructive brightness, contrast, saturation, and resize, applied per rip or per source image.
+- **Image adjustments** — non-destructive brightness, contrast, saturation, hue, temperature, gamma, sharpen, blur, and background-colour removal, applied per rip or per source image; rips can also be rotated/flipped and resized.
 - **Dockable panels** — Texture View, Atlas View, Rips Gallery, and Image Edit can be arranged, saved, and reloaded as named layouts.
 - **Projects** — save and open `.rtrpf` project files. Source images are embedded, so a project still loads after the originals are moved or deleted.
 - **Undo/redo**, a recent-files list, light and dark themes.
