@@ -22,18 +22,28 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
 
 ## Features
 
-- **Perspective rips** — draw a quad over a surface in a photo; the four corners can be moved freely to un-warp perspective into a flat texture. Circle selections are also supported.
-- **Live editing** — rips recompute as you drag.
-- **Atlas packing** — all rips are packed into one image.
-  - *Automatic* sort packs rips tightly into the chosen aspect ratio and scales non-custom rips toward an even size.
-  - *Manual* sort lets you place each rip by hand, with optional snapping to a grid and to nearby rip edges.
-- **Aspect ratio control** — Automatic, Square, or Custom width/height; rips are never stretched.
-- **Image adjustments** — non-destructive brightness, contrast, saturation, hue, temperature, gamma, sharpen, blur, and background-colour removal, applied per rip or per source image; rips can also be rotated/flipped and resized.
-- **Dockable panels** — Texture View, Atlas View, Rips Gallery, and Image Edit can be arranged, saved, and reloaded as named layouts.
-- **Projects** — save and open `.rtrpf` project files. Source images are embedded, so a project still loads after the originals are moved or deleted.
-- **Undo/redo**, a recent-files list, light and dark themes.
-- **Windows integration** — per-user `.rtrpf` file association.
-- and more
+- Perspective quad and circle rips
+- Free-corner perspective un-warp
+- Live rip editing while dragging
+- Automatic tight atlas packing
+- Manual drag-to-place with snapping
+- Automatic, Square, or Custom aspect
+- Rips are never stretched
+- Non-destructive image adjustments
+- Hue, temperature, gamma, sharpen, blur
+- Background-colour removal (colour key)
+- Multiply colour tint
+- Rotate, flip, and resize rips
+- Dockable panels, saved as layouts
+- Self-contained `.rtrpf` projects
+- Undo and redo history
+- Drag-and-drop image import
+- Autosave and crash recovery
+- Multi-core background rendering
+- Recent-files list
+- Light and dark themes
+- Windows `.rtrpf` file association
+- Install, update, and uninstall support
 
 ## Usage
 
