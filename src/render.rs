@@ -30,6 +30,8 @@ pub struct RipRenderInput {
     pub rip: usize,
     pub src: Arc<RgbaImage>,
     pub shape: RipShape,
+    /// Curved-quad mode: `false` = un-warp to a rectangle, `true` = mask/cut-out.
+    pub bezier_shape: bool,
     pub adjust: Adjustments,
     pub orient: Orientation,
     pub resize: Option<[u32; 2]>,
@@ -85,6 +87,7 @@ impl RipRenderer {
                 let result = crate::rip_tool::render_full(
                     &input.src,
                     &input.shape,
+                    input.bezier_shape,
                     &input.adjust,
                     &input.orient,
                     input.resize,

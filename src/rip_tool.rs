@@ -145,6 +145,7 @@ pub fn add_rip(project: &mut Project) {
         image: idx,
         shape,
         bezier_connected: true,
+        bezier_shape: false,
         adjust: crate::project::Adjustments::default(),
         orient: crate::project::Orientation::default(),
         resize: None,
@@ -669,6 +670,7 @@ pub fn edit_preview_scale(quality: f32) -> f32 {
 pub fn render_full(
     src: &image::RgbaImage,
     shape: &RipShape,
+    bezier_shape: bool,
     adjust: &crate::project::Adjustments,
     orient: &crate::project::Orientation,
     resize: Option<[u32; 2]>,
@@ -679,6 +681,8 @@ pub fn render_full(
             let (w, h) = crate::warp::natural_size(*c);
             Some([w, h])
         }
+        // Perspective curved quad un-warps to a rectangle (natural size); a Shape
+        // curved quad is a mask that keeps its own bbox size (like a circle).
         (
             RipShape::CurvedQuad {
                 corners,
@@ -686,10 +690,11 @@ pub fn render_full(
                 in_handles,
             },
             None,
-        ) => {
+        ) if !bezier_shape => {
             let (w, h) = crate::warp::natural_size_curved(*corners, *out_handles, *in_handles);
             Some([w, h])
         }
+        (RipShape::CurvedQuad { .. }, None) => None,
         (RipShape::Circle { .. }, None) => None,
     };
     let mut rgba = match shape {
@@ -698,7 +703,13 @@ pub fn render_full(
             corners,
             out_handles,
             in_handles,
-        } => crate::warp::unwarp_curved(src, *corners, *out_handles, *in_handles, 1.0)?,
+        } => {
+            if bezier_shape {
+                extract_curved_mask(src, *corners, *out_handles, *in_handles)?
+            } else {
+                crate::warp::unwarp_curved(src, *corners, *out_handles, *in_handles, 1.0)?
+            }
+        }
         RipShape::Circle { center, radius } => extract_circle(src, *center, *radius)?,
     };
     crate::image_edit::apply_adjustments(&mut rgba, adjust);
@@ -754,6 +765,8 @@ pub fn recompute_dirty(
 
         // The output size the atlas should see, independent of preview quality:
         // an explicit resize override, else the quad's natural un-warp size.
+        // Shape-mode curved quads are a mask (keep bbox size), not an un-warp.
+        let shape_mode = rip.bezier_shape;
         let target = match (&rip.shape, rip.resize) {
             (_, Some(t)) => Some(t),
             (RipShape::Quad(c), None) => {
@@ -767,10 +780,11 @@ pub fn recompute_dirty(
                     in_handles,
                 },
                 None,
-            ) => {
+            ) if !shape_mode => {
                 let (w, h) = crate::warp::natural_size_curved(*corners, *out_handles, *in_handles);
                 Some([w, h])
             }
+            (RipShape::CurvedQuad { .. }, None) => None,
             (RipShape::Circle { .. }, None) => None,
         };
 
@@ -793,7 +807,10 @@ pub fn recompute_dirty(
                 out_handles,
                 in_handles,
             } => {
-                if preview {
+                if shape_mode {
+                    // Cookie-cutter the curved outline (cheap: crop + mask, no warp).
+                    extract_curved_mask(&img.pixels, *corners, *out_handles, *in_handles)
+                } else if preview {
                     // Same downscale trick as the quad: scale the corners *and*
                     // both handle sets into mip space, warp small, report `target`.
                     let (ms, msrc) = img.preview_source(preview_scale);
@@ -867,6 +884,94 @@ fn extract_circle(src: &image::RgbaImage, center: Pos2, radius: f32) -> Option<i
         if dx * dx + dy * dy > r2 {
             pixel[3] = 0;
         }
+    }
+    Some(sub)
+}
+
+/// Even-odd point-in-polygon test in image-local coords (no transform).
+fn point_in_polygon_local(poly: &[Pos2], p: Pos2) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let pi = poly[i];
+        let pj = poly[j];
+        if ((pi.y > p.y) != (pj.y > p.y))
+            && (p.x < (pj.x - pi.x) * (p.y - pi.y) / (pj.y - pi.y) + pi.x)
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// "Shape" curved-quad mode: crops the source to the curved outline's bounding
+/// box and masks out everything outside the outline (transparent), keeping the
+/// pixels un-warped — so the rip carries that curved silhouette into the atlas
+/// (the bezier analogue of [`extract_circle`]).
+fn extract_curved_mask(
+    src: &image::RgbaImage,
+    corners: [Pos2; 4],
+    out_handles: [Vec2; 4],
+    in_handles: [Vec2; 4],
+) -> Option<image::RgbaImage> {
+    let poly = curved_polygon(&corners, &out_handles, &in_handles);
+    let mut min = Pos2::new(f32::INFINITY, f32::INFINITY);
+    let mut max = Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for p in &poly {
+        min.x = min.x.min(p.x);
+        min.y = min.y.min(p.y);
+        max.x = max.x.max(p.x);
+        max.y = max.y.max(p.y);
+    }
+
+    let iw = src.width() as i64;
+    let ih = src.height() as i64;
+    let x0 = (min.x.floor() as i64).clamp(0, iw);
+    let y0 = (min.y.floor() as i64).clamp(0, ih);
+    let x1 = (max.x.ceil() as i64).clamp(0, iw);
+    let y1 = (max.y.ceil() as i64).clamp(0, ih);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let mut sub = image::imageops::crop_imm(src, x0 as u32, y0 as u32, w, h).to_image();
+
+    // Mask each pixel against the outline (parallel rows — the per-pixel polygon
+    // test is the only cost). `poly` is read-only and shared across threads.
+    let stride = w as usize * 4;
+    let mask_row = |oy: u32, row: &mut [u8]| {
+        let ly = y0 as f32 + oy as f32 + 0.5;
+        for ox in 0..w as usize {
+            let lx = x0 as f32 + ox as f32 + 0.5;
+            if !point_in_polygon_local(&poly, Pos2::new(lx, ly)) {
+                row[ox * 4 + 3] = 0;
+            }
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if threads <= 1 || h < 64 {
+        for (oy, row) in sub.chunks_mut(stride).enumerate() {
+            mask_row(oy as u32, row);
+        }
+    } else {
+        let rows_per = (h as usize).div_ceil(threads);
+        std::thread::scope(|s| {
+            for (band, chunk) in sub.chunks_mut(rows_per * stride).enumerate() {
+                let mask_row = &mask_row;
+                let row0 = (band * rows_per) as u32;
+                s.spawn(move || {
+                    for (i, row) in chunk.chunks_mut(stride).enumerate() {
+                        mask_row(row0 + i as u32, row);
+                    }
+                });
+            }
+        });
     }
     Some(sub)
 }

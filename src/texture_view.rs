@@ -327,6 +327,23 @@ fn shape_bar(ui: &mut egui::Ui, project: &mut Project) {
                     rip_tool::set_shape_circle(rip);
                 }
 
+                // What the bezier does: flatten (Perspective) vs cut-out (Shape).
+                ui.separator();
+                ui.label("Bezier use:");
+                let mut shape_mode = rip.bezier_shape;
+                ui.add_enabled_ui(is_curved, |ui| {
+                    if ui.selectable_label(!shape_mode, "Perspective").clicked() {
+                        shape_mode = false;
+                    }
+                    if ui.selectable_label(shape_mode, "Shape").clicked() {
+                        shape_mode = true;
+                    }
+                });
+                if is_curved && shape_mode != rip.bezier_shape {
+                    rip.bezier_shape = shape_mode;
+                    rip.dirty = true; // output differs between the two modes
+                }
+
                 // Bezier-handle linkage — only meaningful for a bezier quad.
                 ui.separator();
                 ui.label("Bezier type:");

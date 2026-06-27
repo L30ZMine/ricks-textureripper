@@ -5,7 +5,10 @@ Rick's Texture Ripper — Changelog
 
 - New "Quad (bezier)" rip shape — bend the four sides to rip textures off
   curved surfaces (curved walls, barrels, bottle labels). Each corner gets two
-  draggable handles; perspective flattening still applies
+  draggable handles
+- Bezier use toggle (Shape bar): Perspective flattens the curved area into a
+  clean rectangle; Shape cuts it out along the curved outline instead (no
+  flattening), so the rip keeps that curved silhouette in the atlas
 - Bezier type toggle (Shape bar): Connected bends a corner's handles together
   for a smooth curve, Separate moves each handle on its own for a sharp corner
 

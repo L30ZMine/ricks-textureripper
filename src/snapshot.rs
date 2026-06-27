@@ -129,6 +129,10 @@ pub struct RipState {
     /// default to Connected.
     #[serde(default = "default_true")]
     pub connected: bool,
+    /// Curved-quad mode: `false` = Perspective un-warp, `true` = Shape/mask;
+    /// older files default to Perspective.
+    #[serde(default)]
+    pub bezier_shape: bool,
     pub adjust: Adjustments,
     /// Rotation / mirroring of the rip output (older files default to none).
     #[serde(default)]
@@ -183,6 +187,7 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
                 image: r.image,
                 shape: SerShape::from_shape(&r.shape),
                 connected: r.bezier_connected,
+                bezier_shape: r.bezier_shape,
                 adjust: r.adjust,
                 orient: r.orient,
                 resize: r.resize,
@@ -234,6 +239,7 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             image: rs.image,
             shape: rs.shape.to_shape(),
             bezier_connected: rs.connected,
+            bezier_shape: rs.bezier_shape,
             adjust: rs.adjust,
             orient: rs.orient,
             resize: rs.resize,

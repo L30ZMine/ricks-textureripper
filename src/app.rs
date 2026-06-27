@@ -2385,6 +2385,7 @@ fn start_rip_render(project: &mut Project) {
             rip: i,
             src,
             shape: rip.shape.clone(),
+            bezier_shape: rip.bezier_shape,
             adjust: rip.adjust,
             orient: rip.orient,
             resize: rip.resize,
