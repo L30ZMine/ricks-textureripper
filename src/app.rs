@@ -1513,7 +1513,7 @@ impl App {
                         },
                     );
                     ui.add_space(16.0);
-                    ui.label("Version 1.3.3");
+                    ui.label("Version 1.3.4");
                     ui.weak(format!(
                         "Built {} {} UTC",
                         env!("BUILD_DATE"),
@@ -2385,6 +2385,7 @@ fn start_rip_render(project: &mut Project) {
             rip: i,
             src,
             shape: rip.shape.clone(),
+            bezier_shape: rip.bezier_shape,
             adjust: rip.adjust,
             orient: rip.orient,
             resize: rip.resize,

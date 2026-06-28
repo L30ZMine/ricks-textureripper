@@ -309,17 +309,62 @@ fn toolbar(ui: &mut egui::Ui, project: &mut Project) {
 fn shape_bar(ui: &mut egui::Ui, project: &mut Project) {
     if let Some(sel) = project.editor.selected {
         if sel < project.rips.len() {
+            let mut show_curve_hint = false;
             ui.horizontal(|ui| {
                 let rip = &mut project.rips[sel];
                 ui.label("Shape:");
                 let is_quad = matches!(rip.shape, RipShape::Quad(_));
-                if ui.selectable_label(is_quad, "Quad (perspective)").clicked() {
+                let is_curved = matches!(rip.shape, RipShape::CurvedQuad { .. });
+                let is_circle = matches!(rip.shape, RipShape::Circle { .. });
+                if ui.selectable_label(is_quad, "Quad").clicked() {
                     rip_tool::set_shape_quad(rip);
                 }
-                if ui.selectable_label(!is_quad, "Circle").clicked() {
+                if ui.selectable_label(is_curved, "Quad (bezier)").clicked() {
+                    rip_tool::set_shape_curved_quad(rip);
+                    show_curve_hint = !is_curved;
+                }
+                if ui.selectable_label(is_circle, "Circle").clicked() {
                     rip_tool::set_shape_circle(rip);
                 }
+
+                // What the bezier does: flatten (Perspective) vs cut-out (Shape).
+                ui.separator();
+                ui.label("Bezier use:");
+                let mut shape_mode = rip.bezier_shape;
+                ui.add_enabled_ui(is_curved, |ui| {
+                    if ui.selectable_label(!shape_mode, "Perspective").clicked() {
+                        shape_mode = false;
+                    }
+                    if ui.selectable_label(shape_mode, "Shape").clicked() {
+                        shape_mode = true;
+                    }
+                });
+                if is_curved && shape_mode != rip.bezier_shape {
+                    rip.bezier_shape = shape_mode;
+                    rip.dirty = true; // output differs between the two modes
+                }
+
+                // Bezier-handle linkage — only meaningful for a bezier quad.
+                ui.separator();
+                ui.label("Bezier type:");
+                let mut connected = rip.bezier_connected;
+                ui.add_enabled_ui(is_curved, |ui| {
+                    if ui.selectable_label(!connected, "Separate").clicked() {
+                        connected = false;
+                    }
+                    if ui.selectable_label(connected, "Connected").clicked() {
+                        connected = true;
+                    }
+                });
+                if is_curved {
+                    rip.bezier_connected = connected;
+                }
             });
+            if show_curve_hint {
+                project.set_status(
+                    "Drag the corner handles to bend the sides. Set Bezier type to Separate to move each handle on its own.",
+                );
+            }
         }
     }
 }
@@ -583,8 +628,26 @@ fn canvas(ui: &mut egui::Ui, project: &mut Project) {
             let x = make_xform(rect.min, view, images[rips[sel].image].pos, images[rips[sel].image].scale);
             rip_tool::draw_rip(&rips[sel], &painter, &x, true);
             if guides.enabled {
-                if let RipShape::Quad(c) = &rips[sel].shape {
-                    rip_tool::draw_guides(c, &painter, &x, guides.vertical, guides.horizontal);
+                match &rips[sel].shape {
+                    RipShape::Quad(c) => {
+                        rip_tool::draw_guides(c, &painter, &x, guides.vertical, guides.horizontal);
+                    }
+                    RipShape::CurvedQuad {
+                        corners,
+                        out_handles,
+                        in_handles,
+                    } => {
+                        rip_tool::draw_guides_curved(
+                            corners,
+                            out_handles,
+                            in_handles,
+                            &painter,
+                            &x,
+                            guides.vertical,
+                            guides.horizontal,
+                        );
+                    }
+                    RipShape::Circle { .. } => {}
                 }
             }
         }

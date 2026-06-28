@@ -1,4 +1,4 @@
-<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.3 </p>
+<p align="center">Rick's Texture Ripper - Built in Rust - Version 1.3.4 </p>
 <p align="center">
   <img src="src/logo_long_g.png" alt="Rick's Texture Ripper" width="520">
 </p>
@@ -13,37 +13,30 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
 <img src="screens/Screen%20(4).png" alt="Rick's Texture Ripper" width="320">
 </p>
 
-## Navigation
-
-- **Zoom** — mouse wheel
-- **Pan** — middle mouse button
-- **Move an image** — Shift + left-drag
-- **Edit a rip** — left-drag its handles
-
 ## Features
 
-- Perspective quad and circle rips
-- Free-corner perspective un-warp
-- Live rip editing while dragging
-- Automatic tight atlas packing
-- Manual drag-to-place with snapping
-- Automatic, Square, or Custom aspect
-- Rips are never stretched
-- Non-destructive image adjustments
-- Hue, temperature, gamma, sharpen, blur
-- Background-colour removal (colour key)
-- Multiply colour tint
-- Rotate, flip, and resize rips
-- Dockable panels, saved as layouts
-- Self-contained `.rtrpf` projects
-- Undo and redo history
-- Drag-and-drop image import
-- Autosave and crash recovery
-- Multi-core background rendering
-- Recent-files list
-- Light and dark themes
-- Windows `.rtrpf` file association
-- Install, update, and uninstall support
+- **Perspective rips** — un-warp quads into flat textures
+- **Circle rips** — round selections too
+- **Live editing** — rips recompute as you drag
+- **Automatic packing** — tight atlas, fewest holes
+- **Manual placement** — drag rips, snap to grid
+- **Aspect control** — Automatic, Square, or Custom
+- **No stretching** — rips keep their proportions
+- **Image adjustments** — non-destructive, per rip or image
+- **Colour tools** — hue, temperature, gamma, tint
+- **Filters** — sharpen and blur
+- **Background removal** — colour key to transparent
+- **Rip transforms** — rotate, flip, resize
+- **Dockable panels** — arrange and save layouts
+- **Projects** — self-contained `.rtrpf` files
+- **Undo/redo** — full history per project
+- **Drag and drop** — drop images to add
+- **Autosave** — plus crash recovery
+- **Fast** — multi-core background rendering
+- **Recent files** — reopen past projects
+- **Themes** — light and dark
+- **Windows integration** — `.rtrpf` file association
+- **Installer** — install, update, uninstall
 
 ## Usage
 
@@ -53,6 +46,13 @@ Rick's Texture Rippper or RTR is a desktop tool for ripping flat textures out of
 4. **Export Atlas** (Ctrl+X) to write the PNG.
 
 The in-app **Help > Info** window lists every control and shortcut.
+
+## Navigation
+
+- **Zoom** — mouse wheel
+- **Pan** — middle mouse button
+- **Move an image** — Shift + left-drag
+- **Edit a rip** — left-drag its handles
 
 
 ## Build and run

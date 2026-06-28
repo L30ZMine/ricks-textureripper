@@ -290,6 +290,20 @@ fn scale_rips_on_image(project: &mut Project, image_idx: usize, sx: f32, sy: f32
                     p.y *= sy;
                 }
             }
+            RipShape::CurvedQuad {
+                corners,
+                out_handles,
+                in_handles,
+            } => {
+                for p in corners.iter_mut() {
+                    p.x *= sx;
+                    p.y *= sy;
+                }
+                for v in out_handles.iter_mut().chain(in_handles.iter_mut()) {
+                    v.x *= sx;
+                    v.y *= sy;
+                }
+            }
             RipShape::Circle { center, radius } => {
                 center.x *= sx;
                 center.y *= sy;

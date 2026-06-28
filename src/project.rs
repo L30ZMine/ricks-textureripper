@@ -207,6 +207,16 @@ pub struct Rip {
     pub image: usize,
     /// Selection geometry (image-local coords).
     pub shape: RipShape,
+    /// For a [`RipShape::CurvedQuad`]: when `true` (Connected) dragging one of a
+    /// corner's two bezier handles mirrors the other for a smooth corner; when
+    /// `false` (Separate) the two handles move independently. Ignored for other
+    /// shapes. Toggled from the Texture View's Shape bar.
+    pub bezier_connected: bool,
+    /// For a [`RipShape::CurvedQuad`]: `false` (Perspective) un-warps the curved
+    /// quad into a flat rectangle; `true` (Shape) instead **cuts out** the source
+    /// pixels along the curved outline (no flattening, transparent outside), so the
+    /// rip keeps that curved silhouette in the atlas. Ignored for other shapes.
+    pub bezier_shape: bool,
     /// Live brightness/contrast/saturation adjustments applied to the output.
     pub adjust: Adjustments,
     /// Rotation / mirroring applied to the rip's output (rip-only).

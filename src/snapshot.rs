@@ -16,18 +16,27 @@ use crate::rip_tool::{DragHandle, RipShape};
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum SerShape {
     Quad([[f32; 2]; 4]),
+    CurvedQuad {
+        corners: [[f32; 2]; 4],
+        out_handles: [[f32; 2]; 4],
+        in_handles: [[f32; 2]; 4],
+    },
     Circle { center: [f32; 2], radius: f32 },
 }
 
 impl SerShape {
     fn from_shape(s: &RipShape) -> Self {
         match s {
-            RipShape::Quad(c) => SerShape::Quad([
-                [c[0].x, c[0].y],
-                [c[1].x, c[1].y],
-                [c[2].x, c[2].y],
-                [c[3].x, c[3].y],
-            ]),
+            RipShape::Quad(c) => SerShape::Quad(arr_pos(c)),
+            RipShape::CurvedQuad {
+                corners,
+                out_handles,
+                in_handles,
+            } => SerShape::CurvedQuad {
+                corners: arr_pos(corners),
+                out_handles: arr_vec(out_handles),
+                in_handles: arr_vec(in_handles),
+            },
             RipShape::Circle { center, radius } => SerShape::Circle {
                 center: [center.x, center.y],
                 radius: *radius,
@@ -37,18 +46,58 @@ impl SerShape {
 
     fn to_shape(&self) -> RipShape {
         match self {
-            SerShape::Quad(c) => RipShape::Quad([
-                Pos2::new(c[0][0], c[0][1]),
-                Pos2::new(c[1][0], c[1][1]),
-                Pos2::new(c[2][0], c[2][1]),
-                Pos2::new(c[3][0], c[3][1]),
-            ]),
+            SerShape::Quad(c) => RipShape::Quad(arr_to_pos(c)),
+            SerShape::CurvedQuad {
+                corners,
+                out_handles,
+                in_handles,
+            } => RipShape::CurvedQuad {
+                corners: arr_to_pos(corners),
+                out_handles: arr_to_vec(out_handles),
+                in_handles: arr_to_vec(in_handles),
+            },
             SerShape::Circle { center, radius } => RipShape::Circle {
                 center: Pos2::new(center[0], center[1]),
                 radius: *radius,
             },
         }
     }
+}
+
+fn arr_pos(c: &[Pos2; 4]) -> [[f32; 2]; 4] {
+    [
+        [c[0].x, c[0].y],
+        [c[1].x, c[1].y],
+        [c[2].x, c[2].y],
+        [c[3].x, c[3].y],
+    ]
+}
+
+fn arr_vec(v: &[Vec2; 4]) -> [[f32; 2]; 4] {
+    [
+        [v[0].x, v[0].y],
+        [v[1].x, v[1].y],
+        [v[2].x, v[2].y],
+        [v[3].x, v[3].y],
+    ]
+}
+
+fn arr_to_pos(c: &[[f32; 2]; 4]) -> [Pos2; 4] {
+    [
+        Pos2::new(c[0][0], c[0][1]),
+        Pos2::new(c[1][0], c[1][1]),
+        Pos2::new(c[2][0], c[2][1]),
+        Pos2::new(c[3][0], c[3][1]),
+    ]
+}
+
+fn arr_to_vec(v: &[[f32; 2]; 4]) -> [Vec2; 4] {
+    [
+        Vec2::new(v[0][0], v[0][1]),
+        Vec2::new(v[1][0], v[1][1]),
+        Vec2::new(v[2][0], v[2][1]),
+        Vec2::new(v[3][0], v[3][1]),
+    ]
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -67,11 +116,23 @@ fn default_scale() -> f32 {
     1.0
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct RipState {
     pub name: String,
     pub image: usize,
     pub shape: SerShape,
+    /// Curved-quad handle linkage (Connected/smooth vs Separate); older files
+    /// default to Connected.
+    #[serde(default = "default_true")]
+    pub connected: bool,
+    /// Curved-quad mode: `false` = Perspective un-warp, `true` = Shape/mask;
+    /// older files default to Perspective.
+    #[serde(default)]
+    pub bezier_shape: bool,
     pub adjust: Adjustments,
     /// Rotation / mirroring of the rip output (older files default to none).
     #[serde(default)]
@@ -125,6 +186,8 @@ pub fn capture(project: &Project) -> ProjectSnapshot {
                 name: r.name.clone(),
                 image: r.image,
                 shape: SerShape::from_shape(&r.shape),
+                connected: r.bezier_connected,
+                bezier_shape: r.bezier_shape,
                 adjust: r.adjust,
                 orient: r.orient,
                 resize: r.resize,
@@ -175,6 +238,8 @@ pub fn restore(ctx: &egui::Context, project: &mut Project, snap: &ProjectSnapsho
             name: rs.name.clone(),
             image: rs.image,
             shape: rs.shape.to_shape(),
+            bezier_connected: rs.connected,
+            bezier_shape: rs.bezier_shape,
             adjust: rs.adjust,
             orient: rs.orient,
             resize: rs.resize,
